@@ -1,0 +1,90 @@
+# auditgh Policy Configuration
+#
+# Purpose: control PASS/FAIL gates in the scan summary and CI.
+# Edit values below to tune signal-to-noise for your team. Comments explain intent.
+#
+# Modes:
+# - policy.mode: "fail" -> failing gates mark overall gate as FAIL
+# - policy.short_circuit_fail: when true, any single violation is enough to FAIL
+#
+# Gate semantics:
+# - max_severity: the highest allowed severity; any finding >= this fails
+# - max_counts: per-severity numeric caps
+# - Other fields are tool-specific (see comments under each gate)
+
+version: 1
+
+policy:
+  mode: fail                 # fail|warn
+  short_circuit_fail: true   # stop at first failure (summary still lists all)
+
+# Optional: timebox suppressions (if you add an allowlist in the future)
+allowlist:
+  review_deadline_days: 30
+
+# Tool gates. Remove or relax values to reduce strictness.
+gates:
+  grype:
+    # Fail if any CVE is on the CISA Known Exploited Vulnerabilities (KEV) list
+    require_no_kev: true
+    # Fail if any CVE has EPSS probability >= threshold (0.0–1.0). Try 0.70 if 0.50 is too chatty
+    max_epss: 0.50
+    # Fail if any finding has severity >= this level (critical > high > medium > low > negligible)
+    max_severity: high
+    # Respect VEX statements: only consider vulnerabilities marked as affected
+    respect_vex: true
+
+  checkov:
+    # Terraform/Cloud/IaC misconfig gates
+    max_severity: high
+    max_counts:
+      critical: 0
+      high: 0
+      medium: 10
+      low: 50
+
+  secrets:
+    # Zero tolerance for leaked secrets
+    max_findings: 0
+    include_history: true
+
+  semgrep:
+    # Code-level rules (non-taint). Adjust if too noisy
+    max_severity: high
+    max_counts:
+      critical: 0
+      high: 0
+      medium: 25
+      low: 100
+
+  semgrep_taint:
+    # Exploitable source→sink flows detected by Semgrep taint-mode
+    max_flows: 0
+
+  bandit:
+    # Python SAST (bandit). Enable when repo contains Python
+    max_severity: high
+    max_counts:
+      high: 0
+      medium: 25
+
+  trivy_fs:
+    # Filesystem scan (Trivy). Enable when trivy is installed
+    max_severity: high
+    max_counts:
+      critical: 0
+      high: 0
+      medium: 25
+
+# Path-based overrides (optional). Useful to relax gates for test scaffolding, PoCs, etc.
+# Example: allow more Semgrep warnings under tests/
+# overrides:
+#   - when:
+#       path_matches: "**/tests/**"
+#     set:
+#       gates:
+#         semgrep:
+#           max_severity: critical
+#           max_counts:
+#             high: 5
+#             medium: 100

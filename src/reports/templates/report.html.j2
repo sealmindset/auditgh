@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        :root {
+            --critical: #dc3545;
+            --high: #fd7e14;
+            --medium: #ffc107;
+            --low: #0dcaf0;
+            --info: #6c757d;
+            --success: #198754;
+            --light: #f8f9fa;
+            --dark: #212529;
+            --gray: #6c757d;
+            --border: #dee2e6;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--dark);
+            margin: 0;
+            padding: 0;
+            background-color: #f8f9fa;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            background-color: #fff;
+            border-bottom: 1px solid var(--border);
+            padding: 20px 0;
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            margin: 0 0 10px 0;
+            color: var(--dark);
+        }
+        
+        .meta {
+            color: var(--gray);
+            margin-bottom: 20px;
+        }
+        
+        .summary {
+            background-color: #fff;
+            border-radius: 5px;
+            padding: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        
+        .summary h2 {
+            margin-top: 0;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 10px;
+        }
+        
+        .severity-badge {
+            display: inline-block;
+            padding: 0.25em 0.6em;
+            font-size: 75%;
+            font-weight: 700;
+            line-height: 1;
+            text-align: center;
+            white-space: nowrap;
+            vertical-align: baseline;
+            border-radius: 0.25rem;
+            color: #fff;
+        }
+        
+        .severity-critical { background-color: var(--critical); }
+        .severity-high { background-color: var(--high); }
+        .severity-medium { background-color: var(--medium); color: #000; }
+        .severity-low { background-color: var(--low); color: #000; }
+        .severity-info { background-color: var(--info); }
+        
+        .vulnerability {
+            background-color: #fff;
+            border-radius: 5px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        
+        .vulnerability h3 {
+            margin-top: 0;
+            color: var(--dark);
+        }
+        
+        .vulnerability-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 15px;
+            color: var(--gray);
+            font-size: 0.9em;
+        }
+        
+        .vulnerability-meta span {
+            display: flex;
+            align-items: center;
+        }
+        
+        .vulnerability-meta i {
+            margin-right: 5px;
+        }
+        
+        .no-vulnerabilities {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--success);
+            font-size: 1.2em;
+        }
+        
+        footer {
+            margin-top: 40px;
+            padding: 20px 0;
+            border-top: 1px solid var(--border);
+            color: var(--gray);
+            font-size: 0.9em;
+        }
+        
+        .repo-info {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 15px;
+            margin-top: 30px;
+            font-size: 0.9em;
+        }
+        
+        .repo-info h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .repo-info ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .repo-info li {
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        .repo-info .label {
+            font-weight: bold;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>{{ title }}</h1>
+            <div class="meta">
+                Repository: {{ repo_name }} | Generated: {{ timestamp }}
+            </div>
+        </div>
+    </header>
+    
+    <div class="container">
+        {% if has_vulnerabilities %}
+        <div class="summary">
+            <h2>Vulnerability Summary</h2>
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; margin-top: 20px;">
+                <div style="text-align: center; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
+                    <div style="font-size: 2em; font-weight: bold; color: var(--critical);">{{ critical_vulns }}</div>
+                    <div>Critical</div>
+                </div>
+                <div style="text-align: center; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
+                    <div style="font-size: 2em; font-weight: bold; color: var(--high);">{{ high_vulns }}</div>
+                    <div>High</div>
+                </div>
+                <div style="text-align: center; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
+                    <div style="font-size: 2em; font-weight: bold; color: var(--medium);">{{ medium_vulns }}</div>
+                    <div>Medium</div>
+                </div>
+                <div style="text-align: center; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
+                    <div style="font-size: 2em; font-weight: bold; color: var(--low);">{{ low_vulns }}</div>
+                    <div>Low</div>
+                </div>
+                <div style="text-align: center; padding: 15px; background-color: #f8f9fa; border-radius: 5px;">
+                    <div style="font-size: 2em; font-weight: bold; color: var(--info);">{{ info_vulns }}</div>
+                    <div>Info</div>
+                </div>
+            </div>
+        </div>
+        
+        {% for result in scan_results %}
+        {% if result.has_vulnerabilities %}
+        <div class="vulnerability">
+            <h2>{{ result.scanner_name }}</h2>
+            <p>Found <strong>{{ result.vulnerability_count }}</strong> vulnerabilities.</p>
+            
+            {% for vuln in result.vulnerabilities %}
+            <div class="vulnerability" style="margin-top: 20px; border-left: 4px solid 
+                {% if vuln.severity == 'CRITICAL' %}var(--critical)
+                {% elif vuln.severity == 'HIGH' %}var(--high)
+                {% elif vuln.severity == 'MEDIUM' %}var(--medium)
+                {% elif vuln.severity == 'LOW' %}var(--low)
+                {% else %}var(--info)
+                {% endif %};">
+                <h3>{{ vuln.title }}</h3>
+                
+                <div class="vulnerability-meta">
+                    <span>
+                        <i class="fas fa-bug"></i>
+                        <span class="severity-badge severity-{{ vuln.severity | lower }}">
+                            {{ vuln.severity }}
+                        </span>
+                    </span>
+                    
+                    {% if vuln.package_name %}
+                    <span>
+                        <i class="fas fa-box"></i>
+                        <strong>Package:</strong> {{ vuln.package_name }}
+                        {% if vuln.installed_version %}({{ vuln.installed_version }}){% endif %}
+                    </span>
+                    {% endif %}
+                    
+                    {% if vuln.fixed_versions %}
+                    <span>
+                        <i class="fas fa-shield-alt"></i>
+                        <strong>Fixed in:</strong> {{ vuln.fixed_versions | join(', ') }}
+                    </span>
+                    {% endif %}
+                    
+                    {% if vuln.cve_id %}
+                    <span>
+                        <i class="fas fa-id-card"></i>
+                        <strong>CVE:</strong> {{ vuln.cve_id }}
+                    </span>
+                    {% endif %}
+                </div>
+                
+                {% if vuln.file_path %}
+                <div style="margin-bottom: 15px;">
+                    <strong>File:</strong> <code>{{ vuln.file_path }}{% if vuln.line_number %}:{{ vuln.line_number }}{% endif %}</code>
+                </div>
+                {% endif %}
+                
+                <div style="margin-bottom: 15px;">
+                    <strong>Description:</strong>
+                    <p style="margin: 10px 0 0 0; white-space: pre-line;">{{ vuln.description }}</p>
+                </div>
+                
+                {% if vuln.references %}
+                <div>
+                    <strong>References:</strong>
+                    <ul style="margin: 10px 0 0 0; padding-left: 20px;">
+                        {% for ref in vuln.references %}
+                        <li><a href="{{ ref }}" target="_blank" rel="noopener noreferrer">{{ ref }}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endfor %}
+        
+        {% else %}
+        <div class="no-vulnerabilities">
+            <h2>✅ No Vulnerabilities Found</h2>
+            <p>No security vulnerabilities were detected in the scanned codebase.</p>
+        </div>
+        {% endif %}
+        
+        <div class="repo-info">
+            <h3>Scan Details</h3>
+            <ul>
+                <li><span class="label">Generated at:</span> {{ timestamp }}</li>
+                <li><span class="label">Scanners used:</span> {{ scan_results | map(attribute='scanner_name') | join(', ') }}</li>
+            </ul>
+            
+            {% if repo_metadata %}
+            <h3 style="margin-top: 20px;">Repository Information</h3>
+            <ul>
+                {% for key, value in repo_metadata.items() %}
+                <li><span class="label">{{ key | replace('_', ' ') | title }}:</span> {{ value }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+        </div>
+    </div>
+    
+    <footer>
+        <div class="container" style="text-align: center;">
+            Security scan report generated by AuditGH
+        </div>
+    </footer>
+</body>
+</html>

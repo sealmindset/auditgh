@@ -1,0 +1,70 @@
+# {{ title }}
+
+**Repository:** {{ repo_name }}  
+**Generated:** {{ timestamp }}  
+
+{% if has_vulnerabilities %}
+## ⚠️ Security Vulnerabilities Found
+
+| Severity | Count |
+|----------|-------|
+| 🔴 Critical | {{ critical_vulns }} |
+| 🟠 High | {{ high_vulns }} |
+| 🟡 Medium | {{ medium_vulns }} |
+| 🔵 Low | {{ low_vulns }} |
+| ℹ️ Info | {{ info_vulns }} |
+| **Total** | **{{ total_vulnerabilities }}** |
+
+---
+
+{% for result in scan_results %}
+{% if result.has_vulnerabilities %}
+## {{ result.scanner_name }}
+
+Found **{{ result.vulnerability_count }}** vulnerabilities:
+
+{% for vuln in result.vulnerabilities %}
+### {{ vuln.title }}
+
+- **Severity**: `{{ vuln.severity }}`
+- **Package**: `{{ vuln.package_name }}` ({{ vuln.installed_version }})
+- **Fixed in**: {{ vuln.fixed_versions | join(', ') or 'Not specified' }}
+- **File**: `{{ vuln.file_path }}`{% if vuln.line_number %}:{{ vuln.line_number }}{% endif %}
+- **CVE**: {{ vuln.cve_id or 'N/A' }}
+
+**Description**:  
+{{ vuln.description }}
+
+{% if vuln.references %}
+**References**:
+{% for ref in vuln.references %}- {{ ref }}
+{% endfor %}
+{% endif %}
+
+---
+{% endfor %}
+
+{% endif %}
+{% endfor %}
+
+{% else %}
+## ✅ No Vulnerabilities Found
+
+No security vulnerabilities were detected in the scanned codebase.
+
+{% endif %}
+
+---
+
+### Scan Details
+
+- **Generated at**: {{ timestamp }}
+- **Scanners used**: {{ scan_results | map(attribute='scanner_name') | join(', ') }}
+
+{% if repo_metadata %}
+### Repository Information
+
+{% for key, value in repo_metadata.items() %}
+- **{{ key | replace('_', ' ') | title }}**: {{ value }}
+{% endfor %}
+{% endif %}

@@ -1,0 +1,73 @@
+rules:
+  - id: ognl-dynamic-eval-heuristic
+    message: Potential OGNL evaluation of non-literal expression (Struts 2). Dynamic expressions can enable RCE if influenced by user input. Prefer constant expressions or avoid evaluating user-controlled data.
+    severity: WARNING
+    languages: [java]
+    metadata:
+      category: security
+      cwe:
+        - "CWE-917: Improper Neutralization of Special Elements used in an Expression Language Statement ('Expression Language Injection')"
+      references:
+        - https://cwe.mitre.org/data/definitions/917.html
+        - https://struts.apache.org/
+    pattern-either:
+      # OgnlUtil.getValue with non-literal expression
+      - patterns:
+          - pattern: |
+              org.apache.struts2.util.OgnlUtil $OU = ...;
+              ...
+              $OU.getValue($EXPR, ...);
+          - pattern-not: |
+              org.apache.struts2.util.OgnlUtil $OU = ...;
+              ...
+              $OU.getValue("...", ...);
+      # OgnlUtil.setValue with non-literal expression
+      - patterns:
+          - pattern: |
+              org.apache.struts2.util.OgnlUtil $OU = ...;
+              ...
+              $OU.setValue($EXPR, ...);
+          - pattern-not: |
+              org.apache.struts2.util.OgnlUtil $OU = ...;
+              ...
+              $OU.setValue("...", ...);
+      # ValueStack.findValue with non-literal expression
+      - patterns:
+          - pattern: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.findValue($EXPR, ...);
+          - pattern-not: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.findValue("...", ...);
+      # ValueStack.findString with non-literal expression
+      - patterns:
+          - pattern: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.findString($EXPR, ...);
+          - pattern-not: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.findString("...", ...);
+      # ValueStack.setValue with non-literal expression (2-arg)
+      - patterns:
+          - pattern: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.setValue($EXPR, ...);
+          - pattern-not: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.setValue("...", ...);
+      # ValueStack.setValue with non-literal expression (3-arg)
+      - patterns:
+          - pattern: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.setValue($EXPR, ..., ...);
+          - pattern-not: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.setValue("...", ..., ...);

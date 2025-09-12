@@ -1,0 +1,65 @@
+rules:
+  - id: dangerous-ognl-evaluation
+    message: Potential Apache Struts 2 RCE via unsafe OGNL expression evaluation. User-controlled data flows into an OGNL evaluation sink (e.g., ValueStack/OgnlUtil).
+    severity: ERROR
+    languages: [java]
+    metadata:
+      category: security
+      cwe:
+        - "CWE-917: Improper Neutralization of Special Elements used in an Expression Language Statement ('Expression Language Injection')"
+      references:
+        - https://cwe.mitre.org/data/definitions/917.html
+        - https://struts.apache.org/
+        - https://nvd.nist.gov/vuln/detail/CVE-2006-1547
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: |
+              javax.servlet.http.HttpServletRequest $REQ;
+              ...
+              $SRC = $REQ.getParameter(...);
+      - patterns:
+          - pattern: |
+              javax.servlet.http.HttpServletRequest $REQ;
+              ...
+              java.util.Map $MAP = $REQ.getParameterMap();
+              ...
+              $SRC = $MAP.get(...);
+      - pattern: |
+          org.apache.struts2.dispatcher.HttpParameters $P = ...;
+          ...
+          $SRC = $P.get(...);
+    pattern-sinks:
+      - pattern-either:
+          # Common OGNL/Struts sinks
+          - pattern: |
+              org.apache.struts2.util.OgnlUtil $OU = ...;
+              ...
+              $OU.getValue($SRC, ...);
+          - pattern: |
+              org.apache.struts2.util.OgnlUtil $OU = ...;
+              ...
+              $OU.setValue($SRC, ...);
+          - pattern: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.findValue($SRC, ...);
+          - pattern: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.findString($SRC, ...);
+          - pattern: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.setValue($SRC, ...);
+          - pattern: |
+              com.opensymphony.xwork2.util.ValueStack $VS = ...;
+              ...
+              $VS.setValue($SRC, ..., ...);
+    pattern-propagators:
+      - pattern: |
+          $DST = $SRC;
+      - pattern: |
+          $DST.add($SRC);
+      - pattern: |
+          $DST.put(..., $SRC);

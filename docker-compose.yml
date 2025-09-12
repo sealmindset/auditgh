@@ -1,0 +1,40 @@
+services:
+  auditgh:
+    build:
+      context: .
+      args:
+        - GITHUB_TOKEN=${GITHUB_TOKEN}
+    container_name: auditgh
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_ORG=${GITHUB_ORG}
+      - GITHUB_API=${GITHUB_API:-https://api.github.com}
+    volumes:
+      - ./vulnerability_reports:/app/vulnerability_reports
+      # Cache directories for various tools to speed up subsequent runs
+      - dependency-cache:/root/.cache/dependency-check
+      - semgrep-cache:/root/.cache/semgrep
+      - npm-cache:/root/.npm
+      - bundle-cache:/usr/local/bundle
+      # Persist git credentials between builds
+      - git-credentials:/root/.git-credentials
+    # Uncomment the following lines to limit resources
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 4G
+    # Command to run with default arguments
+    command: >
+      --org ${GITHUB_ORG}
+      --api-base ${GITHUB_API:-https://api.github.com}
+      --report-dir /app/vulnerability_reports
+      --max-workers 4
+      --loglevel INFO
+
+volumes:
+  dependency-cache:
+  semgrep-cache:
+  npm-cache:
+  bundle-cache:
+  git-credentials:

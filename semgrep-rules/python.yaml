@@ -1,0 +1,7 @@
+rules:
+  - id: python-print-statement
+    patterns:
+      - pattern: print(...)
+    message: Found print statement, consider using logging
+    languages: [python]
+    severity: WARNING
