@@ -1,5 +1,6 @@
 services:
   auditgh:
+    platform: ${PLATFORM:-linux/amd64}
     build:
       context: .
       args:
@@ -9,32 +10,49 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITHUB_ORG=${GITHUB_ORG}
       - GITHUB_API=${GITHUB_API:-https://api.github.com}
+      # Quiet some tools and make runs deterministic in CI/macOS
+      - SEMGREP_SEND_TELEMETRY=off
+      - SEMGREP_ENABLE_VERSION_CHECK=0
     volumes:
-      - ./vulnerability_reports:/app/vulnerability_reports
-      # Cache directories for various tools to speed up subsequent runs
+      # Per-scanner report directories
+      - ./ci_reports:/app/ci_reports
+      - ./codeql_reports:/app/codeql_reports
+      - ./oss_reports:/app/oss_reports
+      - ./secrets_reports:/app/secrets_reports
+      - ./hardcoded_ips_reports:/app/hardcoded_ips_reports
+      - ./terraform_reports:/app/terraform_reports
+      - ./contributors_reports:/app/contributors_reports
+      - ./markdown:/app/markdown
+      - ./logs:/app/logs
+      # Caches to speed up subsequent runs
       - dependency-cache:/root/.cache/dependency-check
       - semgrep-cache:/root/.cache/semgrep
       - npm-cache:/root/.npm
       - bundle-cache:/usr/local/bundle
-      # Persist git credentials between builds
-      - git-credentials:/root/.git-credentials
-    # Uncomment the following lines to limit resources
+      # Optional: CodeQL and general caches
+      - codeql-cache:/root/.config/CodeQL
+      - tool-cache:/root/.cache
+      # GitHub auth is provided via environment variables; no need to mount a credentials file
+    # Optional resource limits
     # deploy:
     #   resources:
     #     limits:
-    #       cpus: '2'
-    #       memory: 4G
-    # Command to run with default arguments
+    #       cpus: '3'
+    #       memory: 6G
+    # Default orchestrator arguments (balanced profile)
     command: >
       --org ${GITHUB_ORG}
-      --api-base ${GITHUB_API:-https://api.github.com}
-      --report-dir /app/vulnerability_reports
-      --max-workers 4
-      --loglevel INFO
+      --profile balanced
+      --include-forks --include-archived
+      --scanners-parallel 1
+      --max-workers 6
+      --ignore-private --ignore-localhost --ignore-example
+      -v
 
 volumes:
   dependency-cache:
   semgrep-cache:
   npm-cache:
   bundle-cache:
-  git-credentials:
+  codeql-cache:
+  tool-cache:

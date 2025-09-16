@@ -59,3 +59,4 @@ vulnerability_reports/
 gitleaked/
 hardcoded_ips_reports/
 secrets_reports/
+*_reports/

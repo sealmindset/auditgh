@@ -238,8 +238,46 @@ def _write_summary(header: str, results: List[RunResult]) -> None:
         f.write("".join(lines))
 
 
+def _write_tool_versions() -> None:
+    """Capture installed tool versions to logs/versions.log (best effort)."""
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    out = []
+    tools = [
+        ["python", "--version"],
+        ["pip", "--version"],
+        ["git", "--version"],
+        ["node", "-v"],
+        ["npm", "-v"],
+        ["ruby", "-v"],
+        ["bundler-audit", "version"],
+        ["go", "version"],
+        ["govulncheck", "-version"],
+        ["java", "-version"],
+        ["semgrep", "--version"],
+        ["gitleaks", "version"],
+        ["trivy", "--version"],
+        ["syft", "version"],
+        ["grype", "version"],
+        ["osv-scanner", "--version"],
+        ["codeql", "--version"],
+    ]
+    for cmd in tools:
+        try:
+            proc = subprocess.run(cmd, cwd=str(REPO_ROOT), text=True, capture_output=True, check=False)
+            header = f"$ {' '.join(cmd)}\n"
+            body = proc.stdout or proc.stderr or "(no output)\n"
+            out.append(header + body + ("\n" if not body.endswith("\n") else ""))
+        except Exception as e:
+            out.append(f"$ {' '.join(cmd)}\n(error: {e})\n\n")
+    (LOGS_DIR / "versions.log").write_text("".join(out), encoding="utf-8")
+
 def run_orchestrator(args: argparse.Namespace) -> int:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    # Write versions once per run (best effort)
+    try:
+        _write_tool_versions()
+    except Exception:
+        pass
 
     cmds = _build_scanner_commands(args)
 

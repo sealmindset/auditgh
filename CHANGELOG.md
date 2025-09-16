@@ -38,13 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Deduplication and ranking (CVSS then severity rank).
   - Per-repo JSON/Markdown outputs and org-level `codeql_summary.md`.
  - Orchestrator script `orchestrate_scans.py` to run all scanners with profiles (fast/balanced/deep) and generate `markdown/orchestration_summary.md`.
- - README: new Orchestrator section with usage examples and summary/output locations.
+- README: new Orchestrator section with usage examples and summary/output locations.
+- Docker: comprehensive toolchain in image (Semgrep, Gitleaks, Trivy, Syft, Grype, OSV-Scanner, CodeQL CLI, govulncheck, bundler-audit, Dependency-Check) with per-scanner report volumes.
+- Docker Compose: macOS-friendly defaults (platform linux/amd64), report/cache volumes, and balanced-profile entrypoint via orchestrator.
+- Orchestrator: preflight `logs/versions.log` capturing installed tool versions for diagnostics.
+- Compose: fixed invalid `.git-credentials` file mount; all mounts now target directories only. Added guidance to ensure host bind paths exist.
+- Docs: added `Docker.md` with comprehensive Docker/Compose usage, single/multi-scanner runs, arguments, and troubleshooting.
 
 ### Changed
 - OSS scanner: corrected `pip-audit` usage to `-r <requirements*.txt> -f json`, tolerate non-zero exits when vulns are found, and fallback to `python -m pip_audit` when the CLI is not in PATH.
 - OSS scanner: for Node/Python, OSV scanning now targets lockfiles only; for Java manifests (`pom.xml`, Gradle), OSV scans the repository recursively (`osv-scanner -r`) for better resolution.
 - OSS scanner: when only `package.json` is present, fallback to `npm audit --json` with robust parsing and aggregation.
-- OSS scanner: Semgrep run broadened to include all `**/*.java`, disabled gitignore filtering, increased timeouts and max target size, used absolute rules path, and tolerated non-zero exit codes while still parsing JSON output.
 - OSS scanner: improved error handling, logging, and multi-JSON chunk parsing across all tool integrations.
 - OSS scanner: deduplication now preserves `cvss_score` from any source when the current record lacks it, improving severity ranking consistency.
 

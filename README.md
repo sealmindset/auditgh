@@ -83,25 +83,49 @@ pip install git+https://github.com/your-username/auditgh.git
 
 ### Docker Compose Usage
 
-1. Basic scan of an organization:
+1. Basic run (orchestrator, balanced profile):
    ```bash
-   docker-compose up --build
+   docker compose up --build
    ```
 
-2. Scan with custom parameters:
+2. Prepare host bind paths (must be directories):
+   These directories are mounted into the container for reports and logs. Ensure they exist on the host to avoid permission or ownership surprises.
    ```bash
-   docker-compose run --rm auditgh \
+   mkdir -p ci_reports codeql_reports oss_reports secrets_reports \
+            hardcoded_ips_reports terraform_reports contributors_reports \
+            markdown logs
+   ```
+
+3. Run with custom orchestrator parameters:
+   ```bash
+   docker compose run --rm auditgh \
      --org your-org-name \
-     --include-forks \
-     --include-archived \
-     --max-workers 4
+     --profile deep \
+     --include-forks --include-archived \
+     --scanners-parallel 2 -vv
    ```
 
-3. View reports:
+4. View reports:
    ```bash
-   # Reports are available in the vulnerability_reports directory
-   ls -l vulnerability_reports/
+   # Reports are written to per-scanner folders mounted from the host
+   ls -l codeql_reports/
+   ls -l oss_reports/
+   ls -l secrets_reports/
+   ls -l hardcoded_ips_reports/
+   ls -l terraform_reports/
+   ls -l ci_reports/
+   ls -l contributors_reports/
+   ls -l markdown/
    ```
+
+5. Sanity check toolchain versions:
+   ```bash
+   # Each orchestrator run writes a versions log
+   cat logs/versions.log
+   ```
+
+Authentication note:
+- GitHub authentication uses `GITHUB_TOKEN` and `GITHUB_ORG` environment variables. There is no need to mount a `.git-credentials` file into the container.
 
 ### Orchestrator (multi-scanner)
 

@@ -2,23 +2,15 @@ requests>=2.31.0
 tomli>=2.0.0  # For TOML parsing
 urllib3>=2.0.0  # For retry/backoff in requests
 python-dotenv>=1.0.0  # For .env file support
-semgrep>=1.0.0  # For static code analysis
+semgrep>=1.0.0  # For static code analysis (CLI also installed in Docker)
 PyYAML>=6.0.1  # For parsing YAML (CI workflows)
 setuptools<81.0.0  # Avoid pkg_resources deprecation in newer versions
-dependency-check
 
-# Note: Ensure these are installed in your environment:
-# - git
-# - npm (for Node.js projects)
-# - go (for Go projects)
-# - ruby (for Ruby projects)
-# - java (for Java projects)
+# External CLIs are provided by Docker image or install scripts (not via pip):
+# - git, npm, go, ruby, java
+# - trivy, syft, grype, gitleaks, dependency-check, govulncheck, bundler-audit, codeql
 safety
 pip-audit
 cvss>=3.6  # For CVSS vector parsing from OSV
-# Note: The following tools need to be installed separately:
-# - npm audit (comes with Node.js)
-# - govulncheck (go install golang.org/x/vuln/cmd/govulncheck@latest)
-# - bundle-audit (gem install bundler-audit)
-# - OWASP Dependency-Check (https://owasp.org/www-project-dependency-check/)
+
 

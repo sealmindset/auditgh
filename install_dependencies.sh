@@ -1,3 +1,18 @@
+# Create host-side bind directories for Docker Compose mounts
+create_bind_dirs() {
+  local ROOT
+  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  echo -e "${GREEN}Preparing host bind directories under ${ROOT}${NC}"
+  mkdir -p "${ROOT}/ci_reports" \
+           "${ROOT}/codeql_reports" \
+           "${ROOT}/oss_reports" \
+           "${ROOT}/secrets_reports" \
+           "${ROOT}/hardcoded_ips_reports" \
+           "${ROOT}/terraform_reports" \
+           "${ROOT}/contributors_reports" \
+           "${ROOT}/markdown" \
+           "${ROOT}/logs"
+}
 #!/bin/bash
 
 # Colors for output
@@ -15,6 +30,7 @@ command_exists() {
 SKIP_JAVA=0
 SKIP_GO=0
 SANITY_ONLY=0
+PREPARE_DIRS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-java)
@@ -25,6 +41,9 @@ while [[ $# -gt 0 ]]; do
       shift ;;
     --sanity-only)
       SANITY_ONLY=1
+      shift ;;
+    --prepare-dirs)
+      PREPARE_DIRS=1
       shift ;;
     *)
       # ignore unknown flags
@@ -183,6 +202,10 @@ install_macos() {
         fi
     fi
     
+    # Optionally create Docker bind directories on host
+    if [[ "$PREPARE_DIRS" -eq 1 ]]; then
+      create_bind_dirs
+    fi
     sanity_check
     echo -e "${GREEN}✓ All dependencies installed successfully!${NC}"
 }
@@ -281,6 +304,10 @@ install_linux() {
     # Install Python dependencies
     echo -e "${YELLOW}Installing Python dependencies...${NC}"
     pip3 install -r requirements.txt
+    # Optionally create Docker bind directories on host
+    if [[ "$PREPARE_DIRS" -eq 1 ]]; then
+      create_bind_dirs
+    fi
     sanity_check
     echo -e "${GREEN}✓ All dependencies installed successfully!${NC}"
 }
@@ -331,6 +358,10 @@ install_windows() {
     # Install Python dependencies
     echo -e "${YELLOW}Installing Python dependencies...${NC}"
     pip install -r requirements.txt
+    # Optionally create Docker bind directories on host
+    if [[ "$PREPARE_DIRS" -eq 1 ]]; then
+      create_bind_dirs
+    fi
     sanity_check
     echo -e "${GREEN}✓ All dependencies installed successfully!${NC}"
 }
