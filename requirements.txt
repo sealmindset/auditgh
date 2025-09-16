@@ -3,6 +3,7 @@ tomli>=2.0.0  # For TOML parsing
 urllib3>=2.0.0  # For retry/backoff in requests
 python-dotenv>=1.0.0  # For .env file support
 semgrep>=1.0.0  # For static code analysis
+PyYAML>=6.0.1  # For parsing YAML (CI workflows)
 setuptools<81.0.0  # Avoid pkg_resources deprecation in newer versions
 dependency-check
 
@@ -14,6 +15,7 @@ dependency-check
 # - java (for Java projects)
 safety
 pip-audit
+cvss>=3.6  # For CVSS vector parsing from OSV
 # Note: The following tools need to be installed separately:
 # - npm audit (comes with Node.js)
 # - govulncheck (go install golang.org/x/vuln/cmd/govulncheck@latest)

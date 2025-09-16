@@ -3,6 +3,11 @@
 .env.local
 .env.*.local
 
+.cache/
+semgrep-cache/
+npm-cache/
+bundle-cache/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -51,4 +56,6 @@ Thumbs.db
 
 # Vulnerability Reports
 vulnerability_reports/
-
+gitleaked/
+hardcoded_ips_reports/
+secrets_reports/

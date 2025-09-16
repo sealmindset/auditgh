@@ -20,10 +20,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Flag: `--syft-format` (default: `cyclonedx-json`)
   - Outputs: `{repo}_syft_repo.json`/`.md` and (if image) `{repo}_syft_image.json`/`.md`
 
+- OSS scanner: integrated Semgrep Struts2 rules (`semgrep-rules/java-struts2.yaml`, `java-struts2-heuristics.yaml`) to detect RCE patterns in Java code.
+- OSS scanner: added naive POM-based detector for known Struts2 CVEs (e.g., CVE-2017-5638), including property resolution from the same pom `<properties>`.
+- OSS scanner: unified JSON parsing across `pip-audit`, `osv-scanner`, `npm audit`, and `semgrep` into a consolidated vulnerability table in per-repo markdown reports.
+- OSS scanner: helper to optionally generate `package-lock.json` in temp clones (`npm install --ignore-scripts --package-lock-only`) when only `package.json` exists to improve OSV coverage.
+- OSS scanner: optional flag `--parse-osv-cvss` to compute CVSS base scores from OSV severity vectors (uses `cvss`/`cvsslib` if available).
+- Dependencies: added `cvss` to `requirements.txt` for CVSS vector parsing.
+
+- CodeQL scanner: revamped orchestration modeled after `scan_oss.py`.
+  - Retries on GitHub API, org→user fallback, and improved logging.
+  - Concurrency with `--max-workers` for repo-level parallelism.
+  - Enhanced CLI: `--fail-fast`, `--fail-on-severity`, `--sarif-only`, `--json-only`, `--top-n`, `--timeout-seconds`, `--skip-autobuild`, `--build-command`.
+  - Language detection improvements (Java/Kotlin, JS/TS, Python, Go, C/C++, C#, Ruby, Swift).
+  - CodeQL DB creation supports custom build or autobuild; step timeouts supported.
+  - SARIF parsing enriched with rule tags, precision, CWE extraction; severity normalized from security-severity.
+  - Rule-specific mitigation text extracted from CodeQL rule metadata (`help`, `fullDescription`) and surfaced in Markdown reports; `helpUri` captured as `rule_doc_url` in JSON.
+  - Deduplication and ranking (CVSS then severity rank).
+  - Per-repo JSON/Markdown outputs and org-level `codeql_summary.md`.
+ - Orchestrator script `orchestrate_scans.py` to run all scanners with profiles (fast/balanced/deep) and generate `markdown/orchestration_summary.md`.
+ - README: new Orchestrator section with usage examples and summary/output locations.
+
+### Changed
+- OSS scanner: corrected `pip-audit` usage to `-r <requirements*.txt> -f json`, tolerate non-zero exits when vulns are found, and fallback to `python -m pip_audit` when the CLI is not in PATH.
+- OSS scanner: for Node/Python, OSV scanning now targets lockfiles only; for Java manifests (`pom.xml`, Gradle), OSV scans the repository recursively (`osv-scanner -r`) for better resolution.
+- OSS scanner: when only `package.json` is present, fallback to `npm audit --json` with robust parsing and aggregation.
+- OSS scanner: Semgrep run broadened to include all `**/*.java`, disabled gitignore filtering, increased timeouts and max target size, used absolute rules path, and tolerated non-zero exit codes while still parsing JSON output.
+- OSS scanner: improved error handling, logging, and multi-JSON chunk parsing across all tool integrations.
+- OSS scanner: deduplication now preserves `cvss_score` from any source when the current record lacks it, improving severity ranking consistency.
+
+- CodeQL scanner: reporting now shows top findings sorted by CVSS/severity and includes SARIF artifact paths (unless `--json-only`).
+  - Added `Mitigation` column to per-repo Markdown Top Findings tables.
+
 ### Planned
 - Add structured, parseable output (e.g., SARIF/JSON) and a consolidated summary report.
 - Add CI workflow and containerized execution (Docker) with pinned tool versions.
 - Add `--dry-run` mode and additional dependency discovery (Pipenv, setup.cfg/py, requirements.in).
+- Add a minimal fixtures test suite covering JSON parsing normalization and the Struts2 POM detection helper (including property resolution).
+
+### Fixed
+- Resolved Semgrep rules path to use absolute `semgrep-rules/` directory relative to the project, avoiding CWD issues.
+- Prevented OSV extractor errors by avoiding direct scans of `package.json`; scanning is restricted to lockfiles, with `npm audit` as fallback.
+- Eliminated false "pip-audit not installed" failures by correcting flags and adding a module fallback when PATH resolution fails.
+
+## [0.3.1] - 2025-09-12
+
+### Added
+- Hardcoded IPs/Hostnames report now includes proof fields:
+  - JSON: adds `key` and `value` per finding.
+  - Markdown: new columns Key and Value in Detailed Findings.
+- Logging controls added to `scan_hardcoded_ips.py` (mirrors gitleaks script):
+  - `-v/--verbose` (repeatable), `-q/--quiet`, `--loglevel {DEBUG,INFO,WARNING,ERROR,CRITICAL}`.
+
+### Changed
+- `scan_gitleaks_fixed.py` and `scan_hardcoded_ips.py` now fall back from org to user on 404 for repo listing.
+- `install_dependencies.sh` expanded with optional flags and post-install sanity check (documented in 0.3.0), minor refinements.
+
+### Fixed
+- Replaced deprecated `datetime.utcnow()` with `datetime.now(timezone.utc)` in `scan_hardcoded_ips.py`.
+- Summary aggregation for hardcoded IPs: robust regex parsing prevents `ValueError` when reading markdown counts.
+- Created missing Semgrep rules file `semgrep-rules/hardcoded-ips-hostnames.yaml` used by hardcoded IP scanner.
+
+### Notes
+- Consider adding a timeout to the Semgrep subprocess and SIGINT handling if long scans are interrupted.
 
 ## [0.3.0] - 2025-09-11
 
@@ -96,7 +154,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Avoid echoing tokens. Consider using `Bearer` scheme for the header and validate presence.
 - Prefer least-privilege tokens; document required scopes.
 
-[Unreleased]: https://example.com/compare/v0.2.0...HEAD
+[Unreleased]: https://example.com/compare/v0.3.1...HEAD
+[0.3.1]: https://example.com/compare/v0.3.0...v0.3.1
 [0.3.0]: https://example.com/compare/v0.2.0...v0.3.0
 [0.2.0]: https://example.com/compare/v0.1.0...v0.2.0
 [0.1.0]: https://example.com/releases/tag/v0.1.0

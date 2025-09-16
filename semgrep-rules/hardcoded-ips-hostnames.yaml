@@ -1,0 +1,22 @@
+rules:
+  - id: hardcoded-ip-address
+    languages: [python, javascript, typescript, go, java, c, cpp, ruby, php, rust, csharp, yaml, json, terraform, bash]
+    message: Potential hardcoded IPv4 address
+    severity: WARNING
+    pattern-regex: |
+      (?<![0-9])((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?![0-9])
+    metadata:
+      category: hardcoded_ip
+      references:
+        - https://owasp.org/www-community/attacks/Abuse_of_Functionality
+
+  - id: hardcoded-hostname
+    languages: [python, javascript, typescript, go, java, c, cpp, ruby, php, rust, csharp, yaml, json, terraform, bash]
+    message: Potential hardcoded hostname or FQDN
+    severity: INFO
+    pattern-regex: |
+      \b([a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}\b
+    metadata:
+      category: hardcoded_hostname
+      references:
+        - https://owasp.org/www-community/attacks/Abuse_of_Functionality

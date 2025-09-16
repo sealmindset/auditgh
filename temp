@@ -1,0 +1,1 @@
+In CodeQL, the remediation text for an alert is stored in a separate query help file (.qhelp) that corresponds to the query (.ql) that produced the alert. These .qhelp files provide documentation, including a description of the problem and an explanation of how to fix it. 

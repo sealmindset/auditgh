@@ -103,6 +103,34 @@ pip install git+https://github.com/your-username/auditgh.git
    ls -l vulnerability_reports/
    ```
 
+### Orchestrator (multi-scanner)
+
+Use the top-level orchestrator to run multiple scanners with one command and produce a single summary.
+
+Prereqs:
+- Ensure `.env` contains `GITHUB_TOKEN` and `GITHUB_ORG` (or pass `--org/--token`).
+- Some scanners rely on external tools (e.g., CodeQL, Semgrep, Gitleaks, Syft, Grype, Trivy). The orchestrator will skip optional integrations when tools are not present.
+
+Examples:
+
+```bash
+# Balanced profile (default)
+./orchestrate_scans.py -v
+
+# Fast profile (lighter scans)
+./orchestrate_scans.py --profile fast -v
+
+# Deep profile (maximum coverage) with 2 scanners running in parallel
+./orchestrate_scans.py --profile deep --scanners-parallel 2 -vv
+
+# Run only CodeQL and OSS scanners
+./orchestrate_scans.py --only codeql,oss -v
+```
+
+Outputs:
+- Summary: `markdown/orchestration_summary.md`
+- Per-scanner reports are written to their respective folders (e.g., `codeql_reports/`, `oss_reports/`, `terraform_reports/`, `ci_reports/`, `secrets_reports/`, `hardcoded_ips_reports/`, `contributors_reports/`).
+
 ### Local Usage
 
 ### Basic Usage
