@@ -46,10 +46,17 @@ def setup_logging(verbosity: int = 1, quiet: bool = False, level_name: Optional[
             level = logging.WARNING
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
+    try:
+        os.makedirs('logs', exist_ok=True)
+    except Exception:
+        pass
     logging.basicConfig(
         level=level,
         format='%(asctime)s | %(levelname)-8s | %(message)s',
-        handlers=[logging.StreamHandler(sys.stdout)],
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler('logs/contributors_scan.log')
+        ],
     )
 
 

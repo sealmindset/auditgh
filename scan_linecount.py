@@ -73,10 +73,14 @@ def setup_logging(verbosity: int = 1):
         level = logging.DEBUG
     elif verbosity == 0:
         level = logging.WARNING
+    try:
+        os.makedirs('logs', exist_ok=True)
+    except Exception:
+        pass
     logging.basicConfig(
         level=level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[logging.StreamHandler(), logging.FileHandler('linecount_scan.log')]
+        handlers=[logging.StreamHandler(), logging.FileHandler('logs/linecount_scan.log')]
     )
 
 

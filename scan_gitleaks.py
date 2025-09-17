@@ -60,12 +60,16 @@ def setup_logging(verbosity: int = 1):
     elif verbosity == 0:
         log_level = logging.WARNING
     
+    try:
+        os.makedirs('logs', exist_ok=True)
+    except Exception:
+        pass
     logging.basicConfig(
         level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler('gitleaks_scan.log')
+            logging.FileHandler('logs/gitleaks_scan.log')
         ]
     )
 

@@ -49,10 +49,17 @@ def setup_logging(verbosity: int = 1, quiet: bool = False, level_name: Optional[
     # Reconfigure root logger
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
+    try:
+        os.makedirs('logs', exist_ok=True)
+    except Exception:
+        pass
     logging.basicConfig(
         level=level,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[logging.StreamHandler(sys.stdout)]
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler('logs/hardcoded_ips_scan.log')
+        ]
     )
 
 logger = logging.getLogger(__name__)
