@@ -1,0 +1,42 @@
+{
+  "name": "security-portal-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "connect-redis": "^7.1.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "csurf": "^1.11.0",
+    "express": "^5.0.0",
+    "express-rate-limit": "^7.2.0",
+    "express-session": "^1.17.3",
+    "helmet": "^7.1.0",
+    "openid-client": "^5.6.4",
+    "pg": "^8.11.5",
+    "pino": "^9.4.0",
+    "pino-http": "^9.0.0",
+    "redis": "^4.6.7",
+    "uuid": "^9.0.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/helmet": "^4.0.0",
+    "@types/connect-redis": "^0.0.19",
+    "@types/cookie-parser": "^1.4.7",
+    "@types/csurf": "^1.11.5",
+    "@types/express-session": "^1.17.10",
+    "@types/node": "^20.11.25",
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules
+npm-debug.log
+yarn-error.log
+pnpm-lock.yaml
+.git
+Dockerfile*
+dist
+src/**/*.spec.ts
+src/**/*.test.ts
+.env
