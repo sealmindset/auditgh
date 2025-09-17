@@ -93,7 +93,7 @@ pip install git+https://github.com/your-username/auditgh.git
    ```bash
    mkdir -p ci_reports codeql_reports oss_reports secrets_reports \
             hardcoded_ips_reports terraform_reports contributors_reports \
-            markdown logs
+            binaries_reports linecount_reports markdown logs
    ```
 
 3. Run with custom orchestrator parameters:
@@ -115,6 +115,8 @@ pip install git+https://github.com/your-username/auditgh.git
    ls -l terraform_reports/
    ls -l ci_reports/
    ls -l contributors_reports/
+   ls -l binaries_reports/
+   ls -l linecount_reports/
    ls -l markdown/
    ```
 
@@ -154,6 +156,50 @@ Examples:
 Outputs:
 - Summary: `markdown/orchestration_summary.md`
 - Per-scanner reports are written to their respective folders (e.g., `codeql_reports/`, `oss_reports/`, `terraform_reports/`, `ci_reports/`, `secrets_reports/`, `hardcoded_ips_reports/`, `contributors_reports/`).
+- Per-scanner reports are written to their respective folders (e.g., `codeql_reports/`, `oss_reports/`, `terraform_reports/`, `ci_reports/`, `secrets_reports/`, `hardcoded_ips_reports/`, `contributors_reports/`, `binaries_reports/`).
+- Per-scanner reports are written to their respective folders (e.g., `codeql_reports/`, `oss_reports/`, `terraform_reports/`, `ci_reports/`, `secrets_reports/`, `hardcoded_ips_reports/`, `contributors_reports/`, `binaries_reports/`, `linecount_reports/`).
+
+### Binaries/Executables Scanner
+
+The `binaries` scanner inventories binary-like and executable files in repositories and writes per-repo JSON/Markdown reports into `binaries_reports/<repo>/` and an org-level summary at `binaries_reports/binaries_scan_summary.md`.
+
+Heuristics include executable bit checks, magic headers (ELF/PE/Mach-O), archive signatures (zip/gzip), Windows executable/script extensions, shebangs, and a generic binary content heuristic.
+
+Examples:
+
+```bash
+# Run only the binaries scanner via orchestrator
+./orchestrate_scans.py --only binaries -v
+
+# Direct usage: scan a single repo
+python scan_binaries.py --repo owner/repo -v
+
+# Apply filters: skip files smaller than 4 KB and ignore build artifacts
+python scan_binaries.py --org your-org \
+  --min-size-bytes 4096 \
+  --ignore-glob 'dist/**' --ignore-glob 'build/**' --ignore-glob '*.map' -v
+```
+
+### Linecount (SAST-Relevant LOC) Scanner
+
+The `linecount` scanner tallies lines of code that a typical SAST tool (e.g., Sonar/Snyk) would scan, with sensible defaults for included extensions and excluded vendor/build artifacts. Per-repo reports are written to `linecount_reports/<repo>/` and an org-level summary to `linecount_reports/linecount_scan_summary.md`.
+
+Examples:
+
+```bash
+# Run only the linecount scanner via orchestrator
+./orchestrate_scans.py --only linecount -v
+
+# Direct usage: scan a single repo
+python scan_linecount.py --repo owner/repo -v
+
+# Customize filters: add extensions, exclude dirs/globs, include minified code
+python scan_linecount.py --org your-org \
+  --include-ext .proto --include-ext .vue \
+  --exclude-dir dist --exclude-dir build \
+  --exclude-glob '*.min.js' \
+  --no-exclude-minified -v
+```
 
 ### Local Usage
 

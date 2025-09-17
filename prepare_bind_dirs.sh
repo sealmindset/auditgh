@@ -30,6 +30,8 @@ create_dir "$REPO_ROOT/secrets_reports"
 create_dir "$REPO_ROOT/hardcoded_ips_reports"
 create_dir "$REPO_ROOT/terraform_reports"
 create_dir "$REPO_ROOT/contributors_reports"
+create_dir "$REPO_ROOT/binaries_reports"
+create_dir "$REPO_ROOT/linecount_reports"
 create_dir "$REPO_ROOT/markdown"
 create_dir "$REPO_ROOT/logs"
 

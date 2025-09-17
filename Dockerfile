@@ -20,8 +20,26 @@ RUN apt-get update -yqq && apt-get install -yqq --no-install-recommends \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Ruby gems
-RUN gem install bundler-audit
+# Optional: provide a corporate root CA (Base64-encoded PEM) at build time to trust SSL interception proxies
+# Usage: --build-arg CORP_CA_B64=$(base64 -w0 corp-root.pem)
+ARG CORP_CA_B64=""
+
+# Install Ruby gems (bundler-audit) with robust SSL handling
+# 1) If CORP_CA_B64 is provided, install it and update CA bundle
+# 2) Try a normal gem install
+# 3) If it fails due to SSL, fall back to HTTP rubygems (insecure) as a last resort
+RUN set -eux; \
+    if [ -n "$CORP_CA_B64" ]; then \
+      echo "$CORP_CA_B64" | base64 -d > /usr/local/share/ca-certificates/corp-root.crt; \
+      update-ca-certificates || true; \
+    fi; \
+    gem update --system || true; \
+    if ! gem install bundler-audit --no-document; then \
+      echo "bundler-audit install failed, retrying with HTTP (insecure) source due to SSL inspection"; \
+      gem sources --remove https://rubygems.org/ || true; \
+      gem sources --add http://rubygems.org/ || true; \
+      gem install bundler-audit --no-document --clear-sources --source http://rubygems.org/; \
+    fi
 
 # Install Go tools
 RUN go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -67,12 +85,6 @@ RUN wget -q https://github.com/github/codeql-cli-binaries/releases/download/v${C
     && unzip -q /tmp/codeql.zip -d /opt \
     && rm /tmp/codeql.zip
 ENV PATH="${PATH}:/opt/codeql/codeql"
-
-# Configure git to use the token for authentication
-ARG GITHUB_TOKEN
-RUN git config --global credential.helper store && \
-    echo "https://${GITHUB_TOKEN}:x-oauth-basic@github.com" > /root/.git-credentials && \
-    chmod 600 /root/.git-credentials
 
 # Set working directory
 WORKDIR /app

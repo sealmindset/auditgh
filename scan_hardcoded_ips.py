@@ -119,10 +119,26 @@ class GitHubRepositoryManager:
         try:
             repo_name = repo['name']
             clone_dir = target_dir / repo_name
+            clone_url = repo.get('clone_url') or ''
+            # If we have a token and https URL, inject the token for auth to support private repos
+            if self.github_token and clone_url.startswith('https://'):
+                # Avoid leaking token in logs; only use for the command argument
+                # Format: https://TOKEN:x-oauth-basic@github.com/owner/repo.git
+                auth_url = clone_url.replace('https://', f"https://{self.github_token}:x-oauth-basic@", 1)
+            else:
+                auth_url = clone_url
             
             if clone_dir.exists():
                 logger.info(f"Repository {repo_name} already exists, pulling latest changes...")
                 try:
+                    # Ensure remote fetch uses auth_url if needed
+                    if self.github_token and clone_url.startswith('https://'):
+                        subprocess.run(
+                            ['git', '-C', str(clone_dir), 'remote', 'set-url', 'origin', auth_url],
+                            check=True,
+                            capture_output=True,
+                            text=True
+                        )
                     subprocess.run(
                         ['git', '-C', str(clone_dir), 'pull'],
                         check=True,
@@ -136,7 +152,7 @@ class GitHubRepositoryManager:
                 logger.info(f"Cloning {repo_name}...")
                 try:
                     subprocess.run(
-                        ['git', 'clone', '--depth', '1', repo['clone_url'], str(clone_dir)],
+                        ['git', 'clone', '--depth', '1', auth_url, str(clone_dir)],
                         check=True,
                         capture_output=True,
                         text=True

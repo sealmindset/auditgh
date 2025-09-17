@@ -55,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CodeQL scanner: reporting now shows top findings sorted by CVSS/severity and includes SARIF artifact paths (unless `--json-only`).
   - Added `Mitigation` column to per-repo Markdown Top Findings tables.
 
+- Dockerfile: Made `bundler-audit` installation resilient to corporate SSL interception.
+  - Option B: automatic HTTP RubyGems fallback if HTTPS install fails (last resort, insecure).
+  - Option A (alternative): support `--build-arg CORP_CA_B64=<base64 PEM>` to trust a corporate root CA during build.
+
 ### Planned
 - Add structured, parseable output (e.g., SARIF/JSON) and a consolidated summary report.
 - Add CI workflow and containerized execution (Docker) with pinned tool versions.

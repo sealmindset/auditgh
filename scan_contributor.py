@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
+from src.github.rate_limit import make_rate_limited_session, request_with_rate_limit
 from dotenv import load_dotenv
 import fnmatch
 import glob
@@ -57,22 +58,10 @@ def setup_logging(verbosity: int = 1, quiet: bool = False, level_name: Optional[
 # -----------------------------
 
 def make_session(token: str) -> requests.Session:
-    session = requests.Session()
-    retry_strategy = requests.adapters.Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"],
-    )
-    adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.headers.update({
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "auditgh-scan-contributor",
-    })
-    return session
+    return make_rate_limited_session(token, user_agent="auditgh-contributors")
+
+def api_get(session: requests.Session, url: str, **kwargs) -> requests.Response:
+    return request_with_rate_limit(session, 'GET', url, logger=logging.getLogger('contributors.api'), **kwargs)
 
 
 # -----------------------------
@@ -90,7 +79,7 @@ def get_all_repos(session: requests.Session, api_base: str, name: str,
         base = "users" if is_user_fallback else "orgs"
         url = f"{api_base}/{base}/{name}/repos"
         params = {"type": "all", "per_page": per_page, "page": page}
-        resp = session.get(url, params=params, timeout=30)
+        resp = api_get(session, url, params=params, timeout=30)
         if not is_user_fallback and page == 1 and resp.status_code == 404:
             logging.info(f"Organization '{name}' not found or inaccessible. Retrying as a user account...")
             is_user_fallback = True
@@ -113,7 +102,7 @@ def get_all_repos(session: requests.Session, api_base: str, name: str,
 
 def get_single_repo(session: requests.Session, api_base: str, owner: str, repo: str) -> Optional[Dict[str, Any]]:
     url = f"{api_base}/repos/{owner}/{repo}"
-    resp = session.get(url, timeout=30)
+    resp = api_get(session, url, timeout=30)
     if resp.status_code == 404:
         return None
     resp.raise_for_status()
@@ -134,7 +123,7 @@ def fetch_contributors(session: requests.Session, api_base: str, full_name: str,
     page = 1
     per_page = 100
     while True:
-        resp = session.get(
+        resp = api_get(
             url,
             params={
                 "per_page": per_page,
@@ -192,7 +181,7 @@ def get_author_recent_info(session: requests.Session, api_base: str, full_name: 
     """
     owner, repo = full_name.split("/", 1)
     url = f"{api_base}/repos/{owner}/{repo}/commits"
-    resp = session.get(url, params={"author": login, "per_page": limit}, timeout=30)
+    resp = api_get(session, url, params={"author": login, "per_page": limit}, timeout=30)
     if resp.status_code == 404:
         return {"email": None, "last_commit_date": None}
     if resp.status_code == 409:  # empty repo
@@ -291,7 +280,7 @@ def analyze_commits_for_author(
 
     for sha in shas:
         try:
-            c = session.get(f"{base_url}/commits/{sha}", timeout=30)
+            c = api_get(session, f"{base_url}/commits/{sha}", timeout=30)
             if c.status_code in (404, 409):
                 continue
             c.raise_for_status()
@@ -325,7 +314,7 @@ def get_user_permission(session: requests.Session, api_base: str, full_name: str
     try:
         owner, repo = full_name.split("/", 1)
         url = f"{api_base}/repos/{owner}/{repo}/collaborators/{login}/permission"
-        resp = session.get(url, timeout=30)
+        resp = api_get(session, url, timeout=30)
         if resp.status_code in (404, 403):
             return None
         resp.raise_for_status()
@@ -464,7 +453,7 @@ def analyze_prs_for_author(
     per_page = 100
     pr_numbers: List[int] = []
     while len(pr_numbers) < max_prs:
-        resp = session.get(f"{base_url}/pulls", params={"state": "all", "per_page": per_page, "page": page}, timeout=30)
+        resp = api_get(session, f"{base_url}/pulls", params={"state": "all", "per_page": per_page, "page": page}, timeout=30)
         if resp.status_code in (404, 409):
             break
         resp.raise_for_status()
@@ -490,7 +479,7 @@ def analyze_prs_for_author(
 
     for num in pr_numbers:
         try:
-            pr_resp = session.get(f"{base_url}/pulls/{num}", timeout=30)
+            pr_resp = api_get(session, f"{base_url}/pulls/{num}", timeout=30)
             if pr_resp.status_code in (404, 409):
                 continue
             pr_resp.raise_for_status()
@@ -516,7 +505,7 @@ def analyze_prs_for_author(
                     pass
 
             # reviews
-            rev_resp = session.get(f"{base_url}/pulls/{num}/reviews", timeout=30)
+            rev_resp = api_get(session, f"{base_url}/pulls/{num}/reviews", timeout=30)
             if rev_resp.status_code not in (404, 409):
                 try:
                     rev_resp.raise_for_status()

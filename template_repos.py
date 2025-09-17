@@ -519,13 +519,11 @@ def clone_repo(repo: dict) -> bool:
         logging.error(f"No clone URL found for repository: {repo_name}")
         return False
     
-    # Insert token into the URL for authentication
+    # Insert token into the URL for authentication (no global git config side-effects)
     if config.GITHUB_TOKEN and "@github.com" not in clone_url and clone_url.startswith("https://"):
-        # Parse the URL to handle special characters in the token
         from urllib.parse import urlparse, urlunparse
         parsed = urlparse(clone_url)
         if parsed.scheme == 'https':
-            # Rebuild the URL with the token
             netloc = f"x-access-token:{config.GITHUB_TOKEN}@{parsed.netloc}"
             clone_url = urlunparse((
                 parsed.scheme,
@@ -535,26 +533,6 @@ def clone_repo(repo: dict) -> bool:
                 parsed.query,
                 parsed.fragment
             ))
-            
-            # Configure git to use the token for this URL
-            try:
-                # Store the credential in git's credential helper
-                subprocess.run(
-                    ["git", "config", "--global", "credential.helper", "store"],
-                    capture_output=True,
-                    text=True
-                )
-                
-                # Add the credential to the URL
-                subprocess.run(
-                    ["git", "config", "--global", 
-                     f"url.https://x-access-token:{config.GITHUB_TOKEN}@{parsed.netloc}/.insteadOf", 
-                     f"https://{parsed.netloc}/"],
-                    capture_output=True,
-                    text=True
-                )
-            except Exception as e:
-                logging.warning(f"Failed to configure git credentials: {e}")
     
     try:
         # Create parent directory if it doesn't exist

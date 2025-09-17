@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
+from src.github.rate_limit import make_rate_limited_session, request_with_rate_limit
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -76,22 +77,7 @@ def setup_logging(verbosity: int = 1):
 
 
 def make_session() -> requests.Session:
-    session = requests.Session()
-    retry_strategy = requests.adapters.Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"],
-    )
-    adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.headers.update({
-        "Authorization": f"token {config.GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "auditgh-scan-terraform",
-    })
-    return session
+    return make_rate_limited_session(config.GITHUB_TOKEN, user_agent="auditgh-terraform")
 
 
 def _filter_page_repos(page_repos: List[Dict[str, Any]], include_forks: bool, include_archived: bool) -> List[Dict[str, Any]]:
@@ -113,7 +99,7 @@ def get_all_repos(session: requests.Session, include_forks: bool = False, includ
         url = f"{config.GITHUB_API}/{base}/{config.ORG_NAME}/repos"
         params = {"type": "all", "per_page": per_page, "page": page}
         try:
-            resp = session.get(url, params=params, timeout=30)
+            resp = request_with_rate_limit(session, 'GET', url, params=params, timeout=30, logger=logging.getLogger('terraform.api'))
             if not is_user_fallback and page == 1 and resp.status_code == 404:
                 logging.info(f"Organization '{config.ORG_NAME}' not found or inaccessible. Retrying as a user account...")
                 is_user_fallback = True
@@ -142,7 +128,7 @@ def get_single_repo(session: requests.Session, repo_identifier: str) -> Optional
         repo_name = repo_identifier
     url = f"{config.GITHUB_API}/repos/{owner}/{repo_name}"
     try:
-        response = session.get(url, timeout=30)
+        response = request_with_rate_limit(session, 'GET', url, timeout=30, logger=logging.getLogger('terraform.api'))
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:

@@ -44,6 +44,9 @@ SCANNER_REPORT_LINKS: Dict[str, List[Path]] = {
     "codeql": [REPO_ROOT / "codeql_reports" / "codeql_summary.md"],
     # contributors has per-repo reports only; link to directory
     "contributors": [REPO_ROOT / "contributors_reports"],
+    # binaries scanner summary
+    "binaries": [REPO_ROOT / "binaries_reports" / "binaries_scan_summary.md"],
+    "linecount": [REPO_ROOT / "linecount_reports" / "linecount_scan_summary.md"],
 }
 
 
@@ -100,6 +103,8 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
         "terraform",
         "codeql",
         "contributors",
+        "binaries",
+        "linecount",
     ]
 
     if args.only:
@@ -200,6 +205,20 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
             cmd += ["--token", token]
         cmds.append({"name": "contributors", "cmd": cmd})
 
+    # binaries
+    if "binaries" in scanners:
+        cmd = [sys.executable, str(REPO_ROOT / "scan_binaries.py"), "--org", org] + include_flags + vflags
+        if token:
+            cmd += ["--token", token]
+        cmds.append({"name": "binaries", "cmd": cmd})
+
+    # linecount
+    if "linecount" in scanners:
+        cmd = [sys.executable, str(REPO_ROOT / "scan_linecount.py"), "--org", org] + include_flags + vflags
+        if token:
+            cmd += ["--token", token]
+        cmds.append({"name": "linecount", "cmd": cmd})
+
     return cmds
 
 
@@ -231,6 +250,25 @@ def _write_summary(header: str, results: List[RunResult]) -> None:
         lines.append(
             f"| {r.name} | {status} | {r.returncode} | {r.duration} | [{r.log_file.name}]({log_rel}) | {reports_cell} |\n"
         )
+
+    # Append aggregated snippets for certain scanners if their summaries exist
+    try:
+        # Linecount aggregation: include total LOC and link
+        lc_md = REPO_ROOT / "linecount_reports" / "linecount_scan_summary.md"
+        if lc_md.exists():
+            try:
+                lc_text = lc_md.read_text(encoding="utf-8", errors="ignore").splitlines()
+                total_line = next((ln for ln in lc_text if ln.strip().startswith("**Total LOC across repositories:**")), None)
+                lines.append("\n## Linecount Summary\n\n")
+                if total_line:
+                    lines.append(f"{total_line}\n\n")
+                # Link to full summary
+                lc_rel = os.path.relpath(lc_md, target_dir)
+                lines.append(f"See full details: [linecount_scan_summary.md]({lc_rel})\n\n")
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     # Determine summary file path based on resolved target_dir
     summary_file = (target_dir / "orchestration_summary.md")

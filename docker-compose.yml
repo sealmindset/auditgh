@@ -22,6 +22,8 @@ services:
       - ./hardcoded_ips_reports:/app/hardcoded_ips_reports
       - ./terraform_reports:/app/terraform_reports
       - ./contributors_reports:/app/contributors_reports
+      - ./binaries_reports:/app/binaries_reports
+      - ./linecount_reports:/app/linecount_reports
       - ./markdown:/app/markdown
       - ./logs:/app/logs
       # Caches to speed up subsequent runs

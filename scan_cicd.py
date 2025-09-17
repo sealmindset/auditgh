@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from src.github.rate_limit import make_rate_limited_session, request_with_rate_limit
 import yaml
 from dotenv import load_dotenv
 
@@ -78,23 +79,8 @@ def setup_logging(verbosity: int = 1):
 
 
 def make_session() -> requests.Session:
-    session = requests.Session()
-    retry_strategy = requests.adapters.Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"],
-    )
-    adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    if config and config.GITHUB_TOKEN:
-        session.headers.update({
-            "Authorization": f"token {config.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "auditgh-scan-cicd",
-        })
-    return session
+    token = config.GITHUB_TOKEN if config else None
+    return make_rate_limited_session(token, user_agent="auditgh-cicd")
 
 
 def _filter_page_repos(page_repos: List[Dict[str, Any]], include_forks: bool, include_archived: bool) -> List[Dict[str, Any]]:
@@ -118,7 +104,7 @@ def get_all_repos(session: requests.Session, include_forks: bool = True,
         url = f"{config.GITHUB_API}/{base}/{config.ORG_NAME}/repos"
         params = {"type": "all", "per_page": per_page, "page": page}
         try:
-            resp = session.get(url, params=params, timeout=30)
+            resp = request_with_rate_limit(session, 'GET', url, params=params, timeout=30, logger=logging.getLogger('cicd.api'))
             if not is_user_fallback and page == 1 and resp.status_code == 404:
                 logging.info(f"Organization '{config.ORG_NAME}' not found or inaccessible. Retrying as a user account...")
                 is_user_fallback = True
@@ -147,7 +133,7 @@ def get_single_repo(session: requests.Session, repo_identifier: str) -> Optional
         repo_name = repo_identifier
     url = f"{config.GITHUB_API}/repos/{owner}/{repo_name}"
     try:
-        resp = session.get(url, timeout=30)
+        resp = request_with_rate_limit(session, 'GET', url, timeout=30, logger=logging.getLogger('cicd.api'))
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.RequestException as e:
@@ -334,7 +320,7 @@ def find_deployment_targets(workflow_data: Dict[str, Any], session: requests.Ses
                 if run_id:
                     artifacts = fetch_artifacts(session, owner, repo, run_id)
                     for artifact in artifacts:
-                        art_deployments = parse_artifact_for_deployments(artifact)
+                        art_deployments = parse_artifact_for_deployments(session, artifact)
                         for art_dep in art_deployments:
                             deployments.append({
                                 'source': 'artifact',
@@ -372,7 +358,7 @@ def fetch_artifacts(session: requests.Session, owner: str, repo: str, run_id: in
     """Fetch artifacts for a specific workflow run."""
     url = f"{config.GITHUB_API}/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts"
     try:
-        resp = session.get(url, timeout=30)
+        resp = request_with_rate_limit(session, 'GET', url, timeout=30, logger=logging.getLogger('cicd.api'))
         resp.raise_for_status()
         return (resp.json() or {}).get('artifacts') or []
     except requests.exceptions.RequestException as e:
@@ -380,14 +366,14 @@ def fetch_artifacts(session: requests.Session, owner: str, repo: str, run_id: in
         return []
 
 
-def parse_artifact_for_deployments(artifact: Dict[str, Any]) -> List[Dict[str, Any]]:
+def parse_artifact_for_deployments(session: requests.Session, artifact: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Parse artifact metadata and content for deployment targets."""
     deployments = []
     name = artifact.get('name', '')
     # Download and parse artifact content if available (simple string matching for now)
     if 'archive_download_url' in artifact:
         try:
-            resp = session.get(artifact['archive_download_url'], timeout=30)  # session is global, assume accessible
+            resp = request_with_rate_limit(session, 'GET', artifact['archive_download_url'], timeout=30, logger=logging.getLogger('cicd.api'))
             resp.raise_for_status()
             content = resp.text  # Or handle zip/binary if needed
             targets = detect_target_from_artifact_content(content)
@@ -443,7 +429,7 @@ def detect_target_from_artifact_content(content: str) -> List[Dict[str, Any]]:
 def list_workflows(session: requests.Session, owner: str, repo: str) -> List[Dict[str, Any]]:
     url = f"{config.GITHUB_API}/repos/{owner}/{repo}/actions/workflows"
     try:
-        resp = session.get(url, timeout=30)
+        resp = request_with_rate_limit(session, 'GET', url, timeout=30, logger=logging.getLogger('cicd.api'))
         resp.raise_for_status()
         return (resp.json() or {}).get('workflows') or []
     except requests.exceptions.RequestException as e:
@@ -455,7 +441,7 @@ def list_recent_runs(session: requests.Session, owner: str, repo: str, workflow_
     url = f"{config.GITHUB_API}/repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs"
     params = {"per_page": per_page}
     try:
-        resp = session.get(url, params=params, timeout=30)
+        resp = request_with_rate_limit(session, 'GET', url, params=params, timeout=30, logger=logging.getLogger('cicd.api'))
         resp.raise_for_status()
         return (resp.json() or {}).get('workflow_runs') or []
     except requests.exceptions.RequestException as e:

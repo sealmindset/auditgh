@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 import requests
+from src.github.rate_limit import make_rate_limited_session, request_with_rate_limit
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -69,25 +70,9 @@ def setup_logging(verbosity: int = 1):
     )
 
 def make_session() -> requests.Session:
-    """Create and configure a requests session with retry logic."""
-    session = requests.Session()
-    retry_strategy = requests.adapters.Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"]
-    )
-    adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    
-    if config and hasattr(config, 'GITHUB_TOKEN') and config.GITHUB_TOKEN:
-        session.headers.update({
-            "Authorization": f"token {config.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        })
-    
-    return session
+    """Create a session with rate-limit aware retries and auth headers."""
+    token = config.GITHUB_TOKEN if config else None
+    return make_rate_limited_session(token, user_agent="auditgh-gitleaks")
 
 def _filter_page_repos(page_repos: List[Dict[str, Any]], include_forks: bool, include_archived: bool) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
@@ -114,7 +99,7 @@ def get_all_repos(session: requests.Session, include_forks: bool = False,
         url = f"{config.GITHUB_API}/{base}/{config.ORG_NAME}/repos"
         params = {"type": "all", "per_page": per_page, "page": page}
         try:
-            resp = session.get(url, params=params, timeout=30)
+            resp = request_with_rate_limit(session, 'GET', url, params=params, timeout=30, logger=logging.getLogger('gitleaks.api'))
             if not is_user_fallback and page == 1 and resp.status_code == 404:
                 logging.info(f"Organization '{config.ORG_NAME}' not found or inaccessible. Retrying as a user account...")
                 # switch to user mode and restart pagination
@@ -147,7 +132,7 @@ def get_single_repo(session: requests.Session, repo_identifier: str) -> Optional
     url = f"{config.GITHUB_API}/repos/{owner}/{repo_name}"
     
     try:
-        response = session.get(url, timeout=30)
+        response = request_with_rate_limit(session, 'GET', url, timeout=30, logger=logging.getLogger('gitleaks.api'))
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:

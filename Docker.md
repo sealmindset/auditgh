@@ -60,7 +60,7 @@ Before running, ensure host bind paths exist (they must be directories):
 ```bash
 mkdir -p ci_reports codeql_reports oss_reports secrets_reports \
          hardcoded_ips_reports terraform_reports contributors_reports \
-         markdown logs
+         binaries_reports linecount_reports markdown logs
 ```
 
 ## Where Reports and Logs Are Written
@@ -73,6 +73,8 @@ mkdir -p ci_reports codeql_reports oss_reports secrets_reports \
   - `hardcoded_ips_reports/`
   - `terraform_reports/`
   - `contributors_reports/`
+  - `binaries_reports/`
+  - `linecount_reports/`
   - `markdown/` (orchestration summary, etc.)
 - Logs:
   - `logs/` (including `versions.log` with tool versions for every run)
@@ -140,6 +142,8 @@ The orchestrator supports the following scanner keys (use with `--only`):
 - `terraform` – IaC scanning/enrichment (Trivy FS optional in deep profile; KEV/EPSS refresh)
 - `codeql` – SAST using CodeQL CLI across multiple languages; SARIF + Markdown
 - `contributors` – Contributors metadata, churn/PR metrics, permissions, and cross-attribution with secrets
+- `binaries` – Inventories binary-like and executable files; reports counts and details per repo and an org-level summary
+- `linecount` – Tallies SAST-relevant lines of code with language/file breakdown and an org-level summary
 
 Notes:
 - Some scanners are heavier by design (CodeQL, deep Terraform). Prefer `--profile balanced` before running `--profile deep`.
@@ -182,6 +186,25 @@ Notes:
 - CI/CD (`cicd`), Secrets (`gitleaks`), Contributors (`contributors`):
   - Support the common org/repo selection and verbosity
 
+## Binaries/Executables Scanner
+
+The `binaries` scanner inventories binary-like and executable files in repositories and writes per-repo JSON/Markdown reports into `binaries_reports/<repo>/` and an org-level summary at `binaries_reports/binaries_scan_summary.md`.
+
+Heuristics include executable bit checks, magic headers (ELF/PE/Mach-O), archive signatures (zip/gzip), Windows executable/script extensions, shebangs, and a generic binary content heuristic.
+
+Examples:
+
+```bash
+# Run only the binaries scanner via orchestrator
+docker compose run --rm auditgh --only binaries -v
+
+# Apply filters in direct script mode inside the container
+docker compose run --rm auditgh python scan_binaries.py \
+  --org "$GITHUB_ORG" \
+  --min-size-bytes 4096 \
+  --ignore-glob 'dist/**' --ignore-glob 'build/**' --ignore-glob '*.map' -v
+```
+
 ## Discover Arguments and Help
 
 You can inspect each scanner’s CLI help from inside the container:
@@ -201,6 +224,24 @@ docker compose run --rm auditgh --help
 ```
 
 ## Troubleshooting
+
+- SSL interception breaks bundler-audit install (Option B)
+
+  Some corporate networks (for example, Zscaler) perform TLS inspection which can cause SSL verification failures when installing Ruby gems. The Dockerfile now implements a resilient install path for `bundler-audit`:
+
+  - It first attempts a normal `gem install bundler-audit` using the system CA bundle.
+  - If that fails due to SSL, it automatically retries using the HTTP RubyGems source as a last resort:
+    - `gem sources --remove https://rubygems.org/`
+    - `gem sources --add http://rubygems.org/`
+    - `gem install bundler-audit --clear-sources --source http://rubygems.org/`
+
+  Build normally; the fallback is automatic when needed:
+
+  ```bash
+  docker compose build --no-cache
+  ```
+
+  Note: HTTP is insecure. Prefer providing a corporate root CA (Option A) when possible.
 
 - **Build interrupted (exit 130):** Rerun `docker compose build --no-cache`.
 - **Trivy APT repo ‘stable’ Release file error:** The Dockerfile uses Trivy’s official installer; rebuild to pick up the fix.

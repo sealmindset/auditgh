@@ -31,6 +31,7 @@ import concurrent.futures
 from typing import Dict, List, Optional, Any, Tuple, Set
 
 import requests
+from src.github.rate_limit import make_rate_limited_session, request_with_rate_limit
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from dotenv import load_dotenv
@@ -82,18 +83,7 @@ def setup_logging(verbosity: int = 1):
     )
 
 def make_session() -> requests.Session:
-    s = requests.Session()
-    retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET", "POST"],
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    s.mount("https://", adapter)
-    s.mount("http://", adapter)
-    s.headers.update(config.HEADERS)
-    return s
+    return make_rate_limited_session(config.GITHUB_TOKEN, user_agent="auditgh-codeql")
 
 # -----------------
 # GitHub helpers
@@ -117,7 +107,7 @@ def get_all_repos(session: requests.Session, include_forks: bool = False, includ
         url = f"{config.GITHUB_API}/{base}/{config.ORG_NAME}/repos"
         params = {"type": "all", "per_page": per_page, "page": page}
         try:
-            resp = session.get(url, params=params, timeout=30)
+            resp = request_with_rate_limit(session, 'GET', url, params=params, timeout=30, logger=logging.getLogger('codeql.api'))
             if not is_user_fallback and page == 1 and resp.status_code == 404:
                 logging.info("Org not found. Retrying as user...")
                 is_user_fallback = True
@@ -145,7 +135,7 @@ def get_single_repo(session: requests.Session, repo_identifier: str) -> Optional
         repo_name = repo_identifier
     url = f"{config.GITHUB_API}/repos/{owner}/{repo_name}"
     try:
-        r = session.get(url, timeout=30)
+        r = request_with_rate_limit(session, 'GET', url, timeout=30, logger=logging.getLogger('codeql.api'))
         r.raise_for_status()
         return r.json()
     except requests.exceptions.RequestException as e:
