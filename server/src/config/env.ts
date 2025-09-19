@@ -28,6 +28,7 @@ export type AppConfig = {
 
   // Orchestration
   auditWorkspaceDir: string;
+  scannerImage?: string;
 
   // Vector size
   vectorDim: number;
@@ -56,6 +57,7 @@ export const config: AppConfig = {
   databaseUrl: process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/security_portal',
   redisUrl: process.env.REDIS_URL,
   auditWorkspaceDir: process.env.AUDIT_WORKSPACE_DIR || './runs',
+  scannerImage: process.env.SCANNER_IMAGE,
   vectorDim: parseInt(process.env.VECTOR_DIM || '1536', 10),
   postgrestJwtSecret: process.env.POSTGREST_JWT_SECRET,
 };

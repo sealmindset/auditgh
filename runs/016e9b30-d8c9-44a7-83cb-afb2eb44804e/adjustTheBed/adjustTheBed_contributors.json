@@ -1,0 +1,28 @@
+{
+  "repository": "sealmindset/adjustTheBed",
+  "generated_at": "2025-09-19T08:29:29.283228+00:00",
+  "contributors": [
+    {
+      "login": "(anonymous)",
+      "contributions": 5,
+      "name": "Tuc",
+      "email": "tuc@thebedskill.com",
+      "last_commit_date": "",
+      "company": "",
+      "location": "",
+      "blog": "",
+      "created_at": "",
+      "updated_at": "",
+      "type": "Anonymous",
+      "site_admin": false,
+      "html_url": "",
+      "id": null,
+      "churn": null,
+      "critical": null,
+      "verified": null,
+      "perms": null,
+      "sec_attrib": null,
+      "pr": null
+    }
+  ]
+}

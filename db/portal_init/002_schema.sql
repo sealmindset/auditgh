@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS projects (
   repo_url text,
   description text,
   is_active boolean NOT NULL DEFAULT true,
+  -- Summary columns used by API views; defined early so views can be created on first init
+  contributors_count integer NOT NULL DEFAULT 0,
+  last_commit_at timestamptz,
   created_by uuid REFERENCES users(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()

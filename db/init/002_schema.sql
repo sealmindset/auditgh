@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS projects (
   repo_url text,
   description text,
   is_active boolean NOT NULL DEFAULT true,
+  -- Summary columns used by API views; defined here to match portal_init schema
+  contributors_count integer NOT NULL DEFAULT 0,
+  last_commit_at timestamptz,
   created_by uuid REFERENCES users(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()

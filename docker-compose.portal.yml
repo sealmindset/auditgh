@@ -1,7 +1,6 @@
 services:
   db:
     image: pgvector/pgvector:pg14
-    container_name: portal_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -18,8 +17,7 @@ services:
       retries: 20
 
   postgrest:
-    image: postgrest/postgrest:v12
-    container_name: portal_postgrest
+    image: postgrest/postgrest:latest
     depends_on:
       db:
         condition: service_healthy
@@ -34,7 +32,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: portal_redis
     profiles: ["redis"]
     ports:
       - "6379:6379"
@@ -42,7 +39,6 @@ services:
   server:
     build:
       context: ./server
-    container_name: portal_server
     env_file: .env
     depends_on:
       db:
@@ -52,8 +48,9 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
+      SCANNER_IMAGE: ${SCANNER_IMAGE}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
       - ${AUDIT_WORKSPACE_DIR:-./runs}:/workspace/runs
     ports:
       - "8080:8080"
@@ -61,11 +58,34 @@ services:
   web:
     build:
       context: ./web
-    container_name: portal_web
     depends_on:
       - server
     ports:
       - "5173:80"
+    volumes:
+      - ./oss_reports:/usr/share/nginx/html/oss_reports:ro
+
+  # Optional: build the scanner image used by the server's docker runner
+  scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: auditgh-scanner:latest
+    profiles: ["scanner"]
+
+  # Periodic seeder: discovers repos and upserts projects via PostgREST, then sleeps
+  seeder:
+    image: auditgh-scanner:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      postgrest:
+        condition: service_started
+    env_file: .env
+    environment:
+      SEED_INTERVAL: "3600"
+    entrypoint: ["sh", "-lc", "while true; do python scan_contributor.py --org \"${GITHUB_ORG}\" --token \"${GITHUB_TOKEN}\" --init-projects-to-postgrest --postgrest-url http://postgrest:3000 --include-archived --include-forks --persist-contributors --persist-commits --max-recent-commits 100 --init-only -v || true; sleep ${SEED_INTERVAL:-3600}; done"]
+    profiles: ["seed"]
 
 volumes:
   pg_data:

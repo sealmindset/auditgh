@@ -25,6 +25,7 @@ import re
 
 import requests
 from src.github.rate_limit import make_rate_limited_session, request_with_rate_limit
+from src.github.graphql import GitHubGraphQLClient, map_repo_node_to_rest_like
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -76,6 +77,13 @@ def setup_logging(verbosity: int = 1):
 def make_session() -> requests.Session:
     token = config.GITHUB_TOKEN if config else None
     return make_rate_limited_session(token, user_agent="auditgh-oss")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.lower() in ("1", "true", "yes", "on")
 
 def _filter_page_repos(page_repos: List[Dict[str, Any]], include_forks: bool, include_archived: bool) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
@@ -165,6 +173,31 @@ def get_all_repos(session: requests.Session, include_forks: bool = True, include
         except requests.exceptions.RequestException as e:
             logging.error(f"Error fetching repositories: {e}")
             break
+    return repos
+
+
+def get_all_repos_graphql(include_forks: bool = True, include_archived: bool = True) -> List[Dict[str, Any]]:
+    """Discover repositories via GitHub GraphQL with TTL caching.
+
+    Returns a list of dicts shaped like REST repositories, including clone_url,
+    default_branch, and a languages_map for later persistence.
+    """
+    repos: List[Dict[str, Any]] = []
+    token = config.GITHUB_TOKEN
+    if not token:
+        logging.error("GITHUB_TOKEN required for GraphQL")
+        return repos
+    client = GitHubGraphQLClient(token, user_agent="auditgh-oss")
+    per_page = int(os.getenv("GITHUB_GRAPHQL_PAGE_SIZE", "100") or "100")
+    try:
+        for node in client.list_org_repositories(config.ORG_NAME, page_size=per_page):
+            r = map_repo_node_to_rest_like(node)
+            if (not include_forks and r.get('is_fork')) or (not include_archived and r.get('is_archived')):
+                continue
+            repos.append(r)
+    except Exception as e:
+        logging.error(f"GraphQL repo discovery failed: {e}")
+        return []
     return repos
 
 def get_single_repo(session: requests.Session, repo_identifier: str) -> Optional[Dict[str, Any]]:
@@ -1113,6 +1146,11 @@ def main():
     parser.add_argument('--grype-scan-mode', type=str, choices=['sbom', 'fs', 'both'], default='sbom', help='Grype scan mode (default: sbom)')
     # OSV CVSS parsing option
     parser.add_argument('--parse-osv-cvss', action='store_true', help='Parse OSV CVSS vectors into numeric base scores for severity ranking')
+    # GraphQL discovery option
+    parser.add_argument('--use-graphql', action='store_true', help='Use GitHub GraphQL for repo discovery (env GITHUB_USE_GRAPHQL)')
+    # PostgREST persistence (optional)
+    parser.add_argument('--postgrest-url', type=str, help='Base URL for PostgREST (e.g., http://localhost:3001)')
+    parser.add_argument('--persist-languages', action='store_true', help='Persist repository languages to PostgREST')
 
     args = parser.parse_args()
 
@@ -1153,11 +1191,59 @@ def main():
         repos = [repo]
     else:
         logging.info(f"Fetching repositories for {config.ORG_NAME}")
-        repos = get_all_repos(session, include_forks=args.include_forks, include_archived=args.include_archived)
+        use_graphql = bool(getattr(args, 'use_graphql', False)) or _env_bool('GITHUB_USE_GRAPHQL', False)
+        if use_graphql:
+            logging.info("Using GitHub GraphQL for repository discovery")
+            repos = get_all_repos_graphql(include_forks=args.include_forks, include_archived=args.include_archived)
+            if not repos:
+                logging.warning("GraphQL discovery returned no repos or failed; falling back to REST")
+                repos = get_all_repos(session, include_forks=args.include_forks, include_archived=args.include_archived)
+        else:
+            repos = get_all_repos(session, include_forks=args.include_forks, include_archived=args.include_archived)
         if not repos:
             logging.error("No repositories found or accessible with the provided token.")
             sys.exit(1)
         logging.info(f"Found {len(repos)} repositories to scan")
+
+    # Optional: persist languages to PostgREST (idempotent)
+    if getattr(args, 'persist_languages', False) and getattr(args, 'postgrest_url', None):
+        pg_url = args.postgrest_url.rstrip('/')
+        for r in repos:
+            try:
+                # Ensure project exists; capture api_id
+                name = r.get('name')
+                repo_url = r.get('html_url') or f"https://github.com/{r.get('full_name', name)}"
+                description = r.get('description')
+                ensure_payload = {"p_name": name, "p_repo_url": repo_url, "p_description": description}
+                resp = requests.post(f"{pg_url}/rpc/ensure_project", json=ensure_payload, timeout=30)
+                if resp.status_code >= 400:
+                    logging.warning(f"ensure_project failed for {name}: {resp.status_code} {resp.text}")
+                    continue
+                proj_row = (resp.json() or [{}])[0]
+                api_id = proj_row.get('id')
+                if not api_id:
+                    logging.warning(f"ensure_project returned no api_id for {name}")
+                    continue
+                # Build languages payload
+                lang_map = r.get('languages_map') or {}
+                if not lang_map:
+                    # Fallback to REST languages endpoint
+                    full = r.get('full_name') or f"{config.ORG_NAME}/{name}"
+                    try:
+                        url = f"{config.GITHUB_API}/repos/{full}/languages"
+                        gh_resp = request_with_rate_limit(session, 'GET', url, timeout=30, logger=logging.getLogger('oss.api'))
+                        if gh_resp.status_code < 400:
+                            lang_map = gh_resp.json() or {}
+                    except Exception:
+                        pass
+                payload = [{"language": k, "bytes": int(v or 0)} for k, v in (lang_map or {}).items()]
+                if not payload:
+                    continue
+                up_resp = requests.post(f"{pg_url}/rpc/upsert_project_languages", json={"p_project_id": api_id, "p_payload": payload}, timeout=30)
+                if up_resp.status_code >= 400:
+                    logging.warning(f"upsert_project_languages failed for {name}: {up_resp.status_code} {up_resp.text}")
+            except Exception as e:
+                logging.error(f"Language persistence failed for {r.get('name')}: {e}")
 
     # Process repos
     stats: List[Dict[str, Any]] = []

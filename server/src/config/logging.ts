@@ -1,5 +1,5 @@
 import pino from 'pino';
-import pinoHttp from 'pino-http';
+import pinoHttpImport from 'pino-http';
 
 export const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
@@ -7,7 +7,7 @@ export const logger = pino({
     paths: [
       'req.headers.authorization',
       'req.headers.cookie',
-      'res.headers.set-cookie',
+      'res.headers["set-cookie"]',
       'password',
       'client_secret',
       '*.secret',
@@ -17,6 +17,8 @@ export const logger = pino({
   },
 });
 
+// Under NodeNext module resolution the pino-http import type can be ambiguous; cast to callable
+const pinoHttp = (pinoHttpImport as unknown as (opts?: any) => any);
 export const httpLogger = pinoHttp({
   logger,
   customAttributeKeys: {

@@ -1,0 +1,22 @@
+[
+ {
+  "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+  "StartLine": 321,
+  "EndLine": 321,
+  "StartColumn": 37,
+  "EndColumn": 111,
+  "Match": "keyspace = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'",
+  "Secret": "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  "File": "/tmp/repo_scan_agqdyff3/adjustTheBed/adjustTheBed-main.php",
+  "SymlinkFile": "",
+  "Commit": "",
+  "Entropy": 5.9541965,
+  "Author": "",
+  "Email": "",
+  "Date": "",
+  "Message": "",
+  "Tags": [],
+  "RuleID": "generic-api-key",
+  "Fingerprint": "/tmp/repo_scan_agqdyff3/adjustTheBed/adjustTheBed-main.php:generic-api-key:321"
+ }
+]

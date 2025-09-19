@@ -131,6 +131,7 @@ def fetch_contributors(session: requests.Session, api_base: str, full_name: str,
     per_page = 100
     while True:
         resp = api_get(
+            session,
             url,
             params={
                 "per_page": per_page,
@@ -154,31 +155,44 @@ def fetch_contributors(session: requests.Session, api_base: str, full_name: str,
 
 
 def enrich_user(session: requests.Session, api_base: str, login: str) -> Dict[str, Any]:
-    """Fetch user profile fields. Email may be None if private."""
-    url = f"{api_base}/users/{login}"
-    resp = session.get(url, timeout=30)
-    if resp.status_code == 404:
+    """Fetch user profile fields. Email may be None if private.
+
+    Be resilient to 403/404 responses from GitHub (e.g., restricted or removed users):
+    - return {} and continue the pipeline instead of raising.
+    """
+    try:
+        url = f"{api_base}/users/{login}"
+        resp = api_get(session, url, timeout=30)
+        if resp.status_code in (404, 403):
+            logging.debug(f"Skipping user enrichment for '{login}': HTTP {resp.status_code}")
+            return {}
+        resp.raise_for_status()
+        data = resp.json() or {}
+        keep = {
+            "login": data.get("login"),
+            "name": data.get("name"),
+            "company": data.get("company"),
+            "blog": data.get("blog"),
+            "location": data.get("location"),
+            "email": data.get("email"),  # often null
+            "hireable": data.get("hireable"),
+            "bio": data.get("bio"),
+            "twitter_username": data.get("twitter_username"),
+            "created_at": data.get("created_at"),
+            "updated_at": data.get("updated_at"),
+            "type": data.get("type"),
+            "site_admin": data.get("site_admin"),
+            "html_url": data.get("html_url"),
+            "id": data.get("id"),
+        }
+        return keep
+    except requests.HTTPError as e:
+        # On unexpected HTTP errors, log and continue without enrichment
+        logging.warning(f"User enrich failed for '{login}': {e}")
         return {}
-    resp.raise_for_status()
-    data = resp.json() or {}
-    keep = {
-        "login": data.get("login"),
-        "name": data.get("name"),
-        "company": data.get("company"),
-        "blog": data.get("blog"),
-        "location": data.get("location"),
-        "email": data.get("email"),  # often null
-        "hireable": data.get("hireable"),
-        "bio": data.get("bio"),
-        "twitter_username": data.get("twitter_username"),
-        "created_at": data.get("created_at"),
-        "updated_at": data.get("updated_at"),
-        "type": data.get("type"),
-        "site_admin": data.get("site_admin"),
-        "html_url": data.get("html_url"),
-        "id": data.get("id"),
-    }
-    return keep
+    except Exception as e:
+        logging.debug(f"User enrich unexpected error for '{login}': {e}")
+        return {}
 
 
 def get_author_recent_info(session: requests.Session, api_base: str, full_name: str, login: str, limit: int = 50) -> Dict[str, Optional[str]]:
@@ -703,6 +717,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-dir", type=str, default=default_out, help=f"Output directory (default: {default_out})")
     p.add_argument("--include-forks", action="store_true", help="Include forked repositories")
     p.add_argument("--include-archived", action="store_true", help="Include archived repositories")
+    # PostgREST project init
+    p.add_argument("--init-projects-to-postgrest", action="store_true", help="Upsert discovered repositories into PostgREST api.projects via RPC")
+    p.add_argument("--postgrest-url", type=str, help="Base URL for PostgREST (e.g., http://localhost:3001)")
+    p.add_argument("--init-only", action="store_true", help="Perform PostgREST init upserts and exit without scanning")
+    # Persistence flags
+    p.add_argument("--persist-contributors", action="store_true", help="Persist contributors summary into PostgREST")
+    p.add_argument("--persist-commits", action="store_true", help="Persist recent commits into PostgREST")
+    p.add_argument("--max-recent-commits", type=int, default=100, help="Max recent commits per repository to persist (default 100)")
     p.add_argument("--include-anon", action="store_true", help="Include anonymous contributors in results")
     # analysis flags
     p.add_argument("--compute-churn", action="store_true", help="Compute additions/deletions/net and critical touches")
@@ -778,7 +800,184 @@ def main() -> int:
             logging.error("No repositories found or accessible with the provided token.")
             return 1
 
+    # Optional: upsert projects into PostgREST, capture api_id mapping
+    project_api_id: Dict[str, int] = {}
+    if args.init_projects_to_postgrest and args.postgrest_url:
+        def _full_name(r: Dict[str, Any]) -> Optional[str]:
+            fn = r.get('full_name')
+            if fn:
+                return fn
+            owner = ((r.get('owner') or {}).get('login')) or (args.org or '').strip()
+            nm = r.get('name')
+            if owner and nm:
+                return f"{owner}/{nm}"
+            return None
+        def _ensure_project(r: Dict[str, Any]) -> None:
+            try:
+                name = r.get('name') or ''
+                html_url = r.get('html_url') or ''
+                description = r.get('description') or None
+                if not name:
+                    return
+                url = args.postgrest_url.rstrip('/') + '/rpc/ensure_project'
+                payload = { 'p_name': name, 'p_repo_url': html_url or None, 'p_description': description }
+                resp = requests.post(url, json=payload, timeout=30)
+                if resp.status_code >= 300:
+                    logging.warning(f"PostgREST upsert failed for {name}: {resp.status_code} {resp.text[:200]}")
+                    return
+                try:
+                    rows = resp.json() or []
+                    api_id = rows[0]['id'] if rows and isinstance(rows, list) else None
+                    fn = _full_name(r) or name
+                    if api_id is not None:
+                        project_api_id[fn] = int(api_id)
+                except Exception:
+                    pass
+            except Exception as e:
+                logging.warning(f"PostgREST upsert error for {r.get('name')}: {e}")
+        for r in repos:
+            _ensure_project(r)
+
     critical_globs_cfg = load_critical_globs(args.critical_globs)
+
+    # Persist contributors and commits if requested (idempotent upserts)
+    if args.postgrest_url and project_api_id and (args.persist_contributors or args.persist_commits):
+        def _repo_full_name(r: Dict[str, Any]) -> Optional[str]:
+            fn = r.get('full_name')
+            if fn:
+                return fn
+            owner = ((r.get('owner') or {}).get('login')) or (args.org or '').strip()
+            nm = r.get('name')
+            if owner and nm:
+                return f"{owner}/{nm}"
+            return None
+
+        for r in repos:
+            full = _repo_full_name(r)
+            if not full:
+                continue
+            api_id_val = project_api_id.get(full)
+            if not api_id_val:
+                # fall back by repo name key if full_name missing
+                api_id_val = project_api_id.get(r.get('name') or '')
+            if not api_id_val:
+                continue
+
+            contrib_payload: List[Dict[str, Any]] = []
+            commits_payload: List[Dict[str, Any]] = []
+
+            if args.persist_contributors:
+                try:
+                    clist = fetch_contributors(session, args.api_base, full, include_anon=args.include_anon)
+                except Exception as e:
+                    logging.warning(f"contributors fetch failed for {full}: {e}")
+                    clist = []
+                for c in clist:
+                    login = c.get('login') or ''
+                    if not login:
+                        continue
+                    # basic enrichment: last commit date and email from recent commits
+                    info = {}
+                    try:
+                        info = get_author_recent_info(session, args.api_base, full, login, limit=50)
+                    except Exception:
+                        info = {}
+                    is_bot = bool(str(login).endswith('[bot]') or (c.get('type') or '').lower() == 'bot')
+                    contrib_payload.append({
+                        "gh_user_id": c.get('id'),
+                        "login": login,
+                        "display_name": (enrich_user(session, args.api_base, login) or {}).get('name'),
+                        "email": info.get('email'),
+                        "commits_count": c.get('contributions') or 0,
+                        "first_commit_at": None,
+                        "last_commit_at": info.get('last_commit_date'),
+                        "lines_added": 0,
+                        "lines_deleted": 0,
+                        "is_bot": is_bot,
+                        "risk_score": None,
+                    })
+
+            if args.persist_commits:
+                try:
+                    owner, repo_name = full.split('/', 1)
+                    page = 1
+                    per_page = 100
+                    fetched = 0
+                    while fetched < args.max_recent_commits:
+                        url = f"{args.api_base}/repos/{owner}/{repo_name}/commits"
+                        resp = api_get(session, url, params={"per_page": per_page, "page": page}, timeout=30)
+                        if resp.status_code == 404:
+                            break
+                        resp.raise_for_status()
+                        items = resp.json() or []
+                        if not items:
+                            break
+                        for it in items:
+                            if fetched >= args.max_recent_commits:
+                                break
+                            sha = it.get('sha')
+                            commit = it.get('commit') or {}
+                            author_login = (it.get('author') or {}).get('login')
+                            author_email = (commit.get('author') or {}).get('email')
+                            committed_at = (commit.get('author') or {}).get('date')
+                            message = commit.get('message')
+                            url_html = it.get('html_url')
+                            commits_payload.append({
+                                "sha": sha,
+                                "author_login": author_login,
+                                "author_email": author_email,
+                                "committed_at": committed_at,
+                                "additions": None,
+                                "deletions": None,
+                                "files_changed": None,
+                                "message": message,
+                                "url": url_html,
+                            })
+                            fetched += 1
+                        if len(items) < per_page:
+                            break
+                        page += 1
+                except Exception as e:
+                    logging.warning(f"commits fetch failed for {full}: {e}")
+
+            # Persist to PostgREST
+            try:
+                if args.persist_contributors and contrib_payload:
+                    url = args.postgrest_url.rstrip('/') + '/rpc/upsert_project_contributors'
+                    payload = { 'p_project_id': api_id_val, 'p_payload': contrib_payload }
+                    resp = requests.post(url, json=payload, timeout=60)
+                    if resp.status_code >= 300:
+                        logging.warning(f"contributors upsert failed for {full}: {resp.status_code} {resp.text[:200]}")
+                if args.persist_commits and commits_payload:
+                    url = args.postgrest_url.rstrip('/') + '/rpc/upsert_project_commits'
+                    payload = { 'p_project_id': api_id_val, 'p_payload': commits_payload }
+                    resp = requests.post(url, json=payload, timeout=60)
+                    if resp.status_code >= 300:
+                        logging.warning(f"commits upsert failed for {full}: {resp.status_code} {resp.text[:200]}")
+                # Update project stats
+                try:
+                    last_commit_at = None
+                    if commits_payload:
+                        try:
+                            last_commit_at = max([c.get('committed_at') for c in commits_payload if c.get('committed_at')])
+                        except Exception:
+                            last_commit_at = None
+                    stats = {
+                        'contributors_count': len(contrib_payload) if contrib_payload else 0,
+                        'last_commit_at': last_commit_at,
+                    }
+                    url = args.postgrest_url.rstrip('/') + '/rpc/update_project_stats'
+                    resp = requests.post(url, json={'p_project_id': api_id_val, 'p_stats': stats}, timeout=30)
+                    if resp.status_code >= 300:
+                        logging.warning(f"project stats update failed for {full}: {resp.status_code} {resp.text[:200]}")
+                except Exception as e:
+                    logging.debug(f"stats update skipped for {full}: {e}")
+            except Exception as e:
+                logging.warning(f"persistence error for {full}: {e}")
+
+        if args.init_only:
+            logging.info("Init-only mode: completed PostgREST upserts; exiting without scanning.")
+            return 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
             executor.submit(

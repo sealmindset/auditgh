@@ -23,6 +23,7 @@ RUN apt-get update -yqq && apt-get install -yqq --no-install-recommends \
 # Optional: provide a corporate root CA (Base64-encoded PEM) at build time to trust SSL interception proxies
 # Usage: --build-arg CORP_CA_B64=$(base64 -w0 corp-root.pem)
 ARG CORP_CA_B64=""
+ARG SKIP_BUNDLER_AUDIT=""
 
 # Install Ruby gems (bundler-audit) with robust SSL handling
 # 1) If CORP_CA_B64 is provided, install it and update CA bundle
@@ -33,12 +34,16 @@ RUN set -eux; \
       echo "$CORP_CA_B64" | base64 -d > /usr/local/share/ca-certificates/corp-root.crt; \
       update-ca-certificates || true; \
     fi; \
-    gem update --system || true; \
-    if ! gem install bundler-audit --no-document; then \
-      echo "bundler-audit install failed, retrying with HTTP (insecure) source due to SSL inspection"; \
-      gem sources --remove https://rubygems.org/ || true; \
-      gem sources --add http://rubygems.org/ || true; \
-      gem install bundler-audit --no-document --clear-sources --source http://rubygems.org/; \
+    if [ -z "$SKIP_BUNDLER_AUDIT" ]; then \
+      gem update --system || true; \
+      if ! gem install bundler-audit --no-document; then \
+        echo "bundler-audit install failed, retrying with HTTP (insecure) source due to SSL inspection"; \
+        gem sources --remove https://rubygems.org/ || true; \
+        yes | gem sources --add http://rubygems.org/ || true; \
+        gem install bundler-audit --no-document --clear-sources --source http://rubygems.org/ || true; \
+      fi; \
+    else \
+      echo "Skipping bundler-audit installation (SKIP_BUNDLER_AUDIT set)"; \
     fi
 
 # Install Go tools
@@ -94,6 +99,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && python -m pip install --no-cache-dir semgrep
 
+# Install Checkov (IaC scanner)
+RUN python -m pip install --no-cache-dir "checkov==3.2.470" \
+    && checkov --version || true
+
 # Copy the rest of the application
 COPY . .
 
@@ -105,7 +114,6 @@ VOLUME ["/app/ci_reports", \
         "/app/hardcoded_ips_reports", \
         "/app/terraform_reports", \
         "/app/contributors_reports", \
-        "/app/markdown", \
         "/app/logs"]
 
 # Set environment variables

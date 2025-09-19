@@ -5,6 +5,7 @@ python-dotenv>=1.0.0  # For .env file support
 semgrep>=1.0.0  # For static code analysis (CLI also installed in Docker)
 PyYAML>=6.0.1  # For parsing YAML (CI workflows)
 setuptools<81.0.0  # Avoid pkg_resources deprecation in newer versions
+cachetools>=6.2.0,<6.3.0
 
 # External CLIs are provided by Docker image or install scripts (not via pip):
 # - git, npm, go, ruby, java

@@ -75,6 +75,7 @@ def _verbosity_flags(level: int) -> List[str]:
 def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]:
     org = args.org or os.getenv("GITHUB_ORG")
     token = args.token or os.getenv("GITHUB_TOKEN")
+    repo = getattr(args, 'repo', None)
 
     if not org:
         raise SystemExit("GITHUB_ORG is required (set in .env or pass --org)")
@@ -118,7 +119,12 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
 
     # cicd
     if "cicd" in scanners:
-        cmd = [sys.executable, str(REPO_ROOT / "scan_cicd.py"), "--org", org] + include_flags + vflags
+        cmd = [sys.executable, str(REPO_ROOT / "scan_cicd.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "cicd", "cmd": cmd})
@@ -126,7 +132,12 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
     # gitleaks
     if "gitleaks" in scanners:
         # Writes secrets_reports/* and a summary
-        cmd = [sys.executable, str(REPO_ROOT / "scan_gitleaks.py"), "--org", org] + include_flags + vflags
+        cmd = [sys.executable, str(REPO_ROOT / "scan_gitleaks.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "gitleaks", "cmd": cmd})
@@ -141,12 +152,12 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
             hc_flags += ["--ignore-localhost"]
         if getattr(args, "ignore_example", False):
             hc_flags += ["--ignore-example"]
-        cmd = [
-            sys.executable,
-            str(REPO_ROOT / "scan_hardcoded_ips.py"),
-            "--org",
-            org,
-        ] + include_flags + hc_flags + vflags
+        cmd = [sys.executable, str(REPO_ROOT / "scan_hardcoded_ips.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += hc_flags + vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "hardcoded_ips", "cmd": cmd})
@@ -158,7 +169,12 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
             oss_flags += ["--enable-syft", "--syft-format", "cyclonedx-json"]
         if has_grype:
             oss_flags += ["--enable-grype", "--grype-scan-mode", "sbom"]
-        cmd = [sys.executable, str(REPO_ROOT / "scan_oss.py"), "--org", org] + include_flags + oss_flags + vflags
+        cmd = [sys.executable, str(REPO_ROOT / "scan_oss.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += oss_flags + vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "oss", "cmd": cmd})
@@ -168,7 +184,12 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
         tf_flags = ["--refresh-kev", "--refresh-epss"]
         if args.profile == "deep" and not args.no_deep_terraform:
             tf_flags += ["--with-trivy-fs"]
-        cmd = [sys.executable, str(REPO_ROOT / "scan_terraform.py"), "--org", org] + include_flags + tf_flags + vflags
+        cmd = [sys.executable, str(REPO_ROOT / "scan_terraform.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += tf_flags + vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "terraform", "cmd": cmd})
@@ -187,7 +208,12 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
         ]
         if args.profile == "deep" and not args.no_deep_codeql:
             cq_flags += ["--recreate-db"]
-        cmd = [sys.executable, str(REPO_ROOT / "scan_codeql.py"), "--org", org] + include_flags + cq_flags + vflags
+        cmd = [sys.executable, str(REPO_ROOT / "scan_codeql.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += cq_flags + vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "codeql", "cmd": cmd})
@@ -200,21 +226,36 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
             contrib_flags += ["--crosslink-findings", "--findings-dir", str(REPO_ROOT / "secrets_reports")]
         if args.profile == "deep" and not args.no_deep_contributors:
             contrib_flags += ["--compute-churn", "--with-pr-metrics"]
-        cmd = [sys.executable, str(REPO_ROOT / "scan_contributor.py"), "--org", org] + include_flags + contrib_flags + vflags
+        cmd = [sys.executable, str(REPO_ROOT / "scan_contributor.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += contrib_flags + vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "contributors", "cmd": cmd})
 
     # binaries
     if "binaries" in scanners:
-        cmd = [sys.executable, str(REPO_ROOT / "scan_binaries.py"), "--org", org] + include_flags + vflags
+        cmd = [sys.executable, str(REPO_ROOT / "scan_binaries.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "binaries", "cmd": cmd})
 
     # linecount
     if "linecount" in scanners:
-        cmd = [sys.executable, str(REPO_ROOT / "scan_linecount.py"), "--org", org] + include_flags + vflags
+        cmd = [sys.executable, str(REPO_ROOT / "scan_linecount.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "linecount", "cmd": cmd})
@@ -393,6 +434,7 @@ def run_orchestrator(args: argparse.Namespace) -> int:
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Orchestrate multiple AuditGH scanners")
     parser.add_argument("--org", type=str, help="GitHub org/user (overrides GITHUB_ORG)")
+    parser.add_argument("--repo", type=str, help="Limit run to a single repository (owner/name or name)" )
     parser.add_argument("--token", type=str, help="GitHub token (overrides GITHUB_TOKEN)")
 
     parser.add_argument("--profile", choices=["fast", "balanced", "deep"], default="balanced")

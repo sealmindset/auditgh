@@ -377,9 +377,42 @@ def write_repo_report(repo: Dict[str, Any], repo_path: str, report_dir: str,
 # Orchestration
 # --------------
 
+def _persist_loc_to_postgrest(repo: Dict[str, Any], *, postgrest_url: str,
+                              lang_loc: Dict[str, int], lang_files: Dict[str, int]) -> None:
+    try:
+        base = postgrest_url.rstrip('/')
+        name = repo.get('name')
+        repo_url = repo.get('html_url') or repo.get('clone_url') or ''
+        description = repo.get('description')
+        ensure_payload = {"p_name": name, "p_repo_url": repo_url, "p_description": description}
+        resp = requests.post(f"{base}/rpc/ensure_project", json=ensure_payload, timeout=30)
+        resp.raise_for_status()
+        row = (resp.json() or [{}])[0]
+        api_id = row.get('id')
+        if not api_id:
+            logging.warning(f"ensure_project returned no id for {name}")
+            return
+        payload = []
+        for lang, loc in (lang_loc or {}).items():
+            payload.append({
+                "language": lang,
+                "loc": int(loc),
+                "files": int(lang_files.get(lang, 0)),
+                # bytes omitted; keep existing value from earlier languages upsert
+            })
+        if not payload:
+            return
+        up = requests.post(f"{base}/rpc/upsert_project_languages", json={"p_project_id": api_id, "p_payload": payload}, timeout=60)
+        if up.status_code >= 400:
+            logging.warning(f"upsert_project_languages failed for {name}: {up.status_code} {up.text}")
+    except Exception as e:
+        logging.error(f"LOC persistence failed for {repo.get('name')}: {e}")
+
+
 def process_repo(repo: Dict[str, Any], report_dir: str, *, include_exts: Optional[Dict[str, str]] = None,
                  exclude_dirs: Optional[Set[str]] = None, exclude_globs: Optional[List[str]] = None,
-                 exclude_minified: bool = True, max_file_bytes: int = 5_000_000) -> Tuple[str, int]:
+                 exclude_minified: bool = True, max_file_bytes: int = 5_000_000,
+                 persist_loc: bool = False, postgrest_url: Optional[str] = None) -> Tuple[str, int]:
     repo_name = repo['name']
     repo_full = repo['full_name']
     logging.info(f"Processing repository: {repo_full}")
@@ -401,6 +434,8 @@ def process_repo(repo: Dict[str, Any], report_dir: str, *, include_exts: Optiona
             max_file_bytes=max_file_bytes,
         )
         write_repo_report(repo, repo_path, repo_report_dir, total_loc, lang_loc, lang_files)
+        if persist_loc and postgrest_url:
+            _persist_loc_to_postgrest(repo, postgrest_url=postgrest_url, lang_loc=lang_loc, lang_files=lang_files)
         return repo_name, total_loc
     except Exception as e:
         logging.error(f"Error processing repository {repo_full}: {e}")
@@ -468,6 +503,10 @@ def main():
                         help='Do not exclude minified JS/CSS by heuristic')
     parser.add_argument('--max-file-bytes', type=int, default=5_000_000,
                         help='Skip files larger than this (default: 5,000,000)')
+
+    # PostgREST persistence options
+    parser.add_argument('--postgrest-url', type=str, help='Base URL for PostgREST (e.g., http://localhost:3001)')
+    parser.add_argument('--persist-loc', action='store_true', help='Persist LOC per language to PostgREST')
 
     args = parser.parse_args()
 
@@ -544,6 +583,8 @@ def main():
             exclude_globs=exclude_globs,
             exclude_minified=exclude_minified,
             max_file_bytes=args.max_file_bytes,
+            persist_loc=bool(getattr(args, 'persist_loc', False)),
+            postgrest_url=getattr(args, 'postgrest_url', None),
         ): repo for repo in repos}
         for future in concurrent.futures.as_completed(future_to_repo):
             repo = future_to_repo[future]
