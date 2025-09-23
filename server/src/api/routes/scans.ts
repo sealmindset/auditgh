@@ -35,6 +35,9 @@ scansRouter.post('/', requireAuth, async (req, res, next) => {
       scanners: parsed.scanners,
       scope: parsed.scope,
       repo: parsed.repo,
+      codeql_languages: (parsed as any).codeql_languages,
+      codeql_skip_autobuild: (parsed as any).codeql_skip_autobuild,
+      codeql_recreate_db: (parsed as any).codeql_recreate_db,
     });
     res.status(201).json({ data: created });
   } catch (err: any) {

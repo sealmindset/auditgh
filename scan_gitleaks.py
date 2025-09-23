@@ -378,8 +378,15 @@ def main():
                       help='Include archived repositories')
     parser.add_argument('-v', '--verbose', action='count', default=1,
                       help='Increase verbosity (can be specified multiple times)')
-    parser.add_argument('-q', '--quiet', action='store_true',
+    parser.add_argument('-q', '--quiet', action='store_true', 
                       help='Suppress output (overrides --verbose)')
+    # Concurrency control
+    try:
+        default_max_workers = int(os.getenv("GITLEAKS_MAX_WORKERS") or os.getenv("SCAN_MAX_WORKERS") or 5)
+    except Exception:
+        default_max_workers = 5
+    parser.add_argument('--max-workers', type=int, default=default_max_workers,
+                      help=f'Max worker threads (default: {default_max_workers}; env GITLEAKS_MAX_WORKERS or SCAN_MAX_WORKERS)')
     
     args = parser.parse_args()
     
@@ -433,7 +440,7 @@ def main():
     # Process repositories in parallel
     secret_repos = []
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         future_to_repo = {
             executor.submit(process_repo, repo, config.REPORT_DIR): repo 
             for repo in repos

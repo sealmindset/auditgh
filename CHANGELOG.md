@@ -45,6 +45,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Compose: fixed invalid `.git-credentials` file mount; all mounts now target directories only. Added guidance to ensure host bind paths exist.
 - Docs: added `Docker.md` with comprehensive Docker/Compose usage, single/multi-scanner runs, arguments, and troubleshooting.
 
+- CLI: added `--max-workers` to scanners for configurable concurrency with env fallbacks.
+  - `scan_contributor.py` (env: `CONTRIB_MAX_WORKERS` or `SCAN_MAX_WORKERS`)
+  - `scan_oss.py` (env: `OSS_MAX_WORKERS` or `SCAN_MAX_WORKERS`)
+  - `scan_terraform.py` (env: `TF_MAX_WORKERS` or `SCAN_MAX_WORKERS`)
+  - `scan_cicd.py` (env: `CICD_MAX_WORKERS` or `SCAN_MAX_WORKERS`)
+  - `scan_binaries.py` (env: `BINARIES_MAX_WORKERS` or `SCAN_MAX_WORKERS`)
+  - `scan_linecount.py` (env: `LINECOUNT_MAX_WORKERS` or `SCAN_MAX_WORKERS`)
+  - `scan_gitleaks.py` (env: `GITLEAKS_MAX_WORKERS` or `SCAN_MAX_WORKERS`)
+  - Note: `scan_codeql.py` and `scan_insights.py` already supported `--max-workers`.
+
+- CodeQL scanner: resource tuning flags and env fallbacks.
+  - `scan_codeql.py` now supports `--ram-mib` and `--threads` (defaults from env `CODEQL_RAM_MIB`, `CODEQL_THREADS`).
+  - These are passed through to CodeQL `database create`/`analyze` as `--ram` and `--threads`.
+  - Server runner forwards `CODEQL_RAM_MIB` and `CODEQL_THREADS` into the scanner container so UI scans honor limits.
+  - `.env.sample` updated with safe defaults `CODEQL_RAM_MIB=8192`, `CODEQL_THREADS=1`.
+
+- Orchestrator (CodeQL): profile-based query suite and timeout with overrides
+  - Default mapping by profile:
+    - fast → suite: `code-scanning`, timeout: `1200` seconds
+    - balanced → suite: `security-extended`, timeout: `1800` seconds
+    - deep → suite: `security-and-quality`, timeout: `3600` seconds
+  - New CLI flags in `orchestrate_scans.py`:
+    - `--codeql-query-suite` to override the query suite
+    - `--codeql-timeout-seconds` to override the analyze timeout
+    - `--codeql-languages` to target specific CodeQL languages (comma-separated, e.g., `python,java`)
+  - Env overrides (optional):
+    - `ORCHESTRATOR_CODEQL_QUERY_SUITE`
+    - `ORCHESTRATOR_CODEQL_TIMEOUT`
+    - `ORCHESTRATOR_CODEQL_LANGUAGES`
+  - Precedence: CLI > Env > Profile defaults
+
+- CodeQL DB recreation toggle
+  - Orchestrator: new CLI flag `--codeql-recreate-db` to force DB recreation on any profile (deep still recreates by default unless `--no-deep-codeql`).
+  - Server API & Runner: accept `codeql_recreate_db: boolean` and forward `--codeql-recreate-db` to the orchestrator.
+  - Web UI: added a "Recreate CodeQL DB" checkbox in CodeQL Options to avoid cached DB issues on non-deep runs (e.g., balanced profile).
+
+- Server API & Runner: pass targeted CodeQL languages through to orchestrator
+  - API `POST /api/scans` now accepts optional `codeql_languages: string[]`
+  - Server runner forwards `--codeql-languages` to orchestrator when provided
+  - `.env.sample` documents `ORCHESTRATOR_CODEQL_LANGUAGES` for env-based override
+
+- Adaptive GitHub rate-limit defaults added to `.env.sample` and generated `.env` by `bootstrap.sh`:
+  - `GITHUB_TARGET_UTILIZATION=0.5`
+  - `GITHUB_MIN_INTERVAL=0.5`
+
+- Database (portal_init): added CodeQL persistence schema and API views
+  - New tables: `public.codeql_findings`, `public.codeql_scan_repos` with UUID `id` and numeric `api_id` per row.
+  - RLS enabled on both tables; `postgrest_anon` granted SELECT via policies; `app` has ALL for server-side writes.
+  - API views created: `api.codeql_findings`, `api.codeql_scan_repos`, `api.codeql_org_severity_totals`, `api.codeql_org_top_repos`, `api.codeql_recent_scans`.
+  - Implemented migration file `db/portal_init/012_codeql.sql` so fresh setups initialize correctly without manual SQL.
+
+- Server: CodeQL ingestion now persists per-scan, per-repo summary rows
+  - `server/src/services/codeql_ingest.ts` stages and upserts rows into `codeql_scan_repos` via new repository `server/src/db/repositories/codeql_scan_repos.ts`.
+  - Summary rows include `has_sarif` and `findings_count` aggregated by language.
+
+### Fixed
+- Resolved Semgrep rules path to use absolute `semgrep-rules/` directory relative to the project, avoiding CWD issues.
+- Prevented OSV extractor errors by avoiding direct scans of `package.json`; scanning is restricted to lockfiles, with `npm audit` as fallback.
+- Eliminated false "pip-audit not installed" failures by correcting flags and adding a module fallback when PATH resolution fails.
+
+- CodeQL CLI detection inside scanner container:
+  - Fixed PATH to include `/opt/codeql` so `codeql` binary is found.
+  - Built scanner image for `linux/amd64` to match the CodeQL CLI binary architecture; Docker Compose updated to run `scanner`/`seeder` with `platform: linux/amd64` to avoid architecture mismatch (Rosetta/QEMU errors).
+
+- Dashboard severity totals: `api.codeql_org_severity_totals` now `COALESCE`s null sums to `0` so empty datasets return numeric zeros instead of nulls.
+- Scanner: added `scan_engagement.py` to fetch stars/forks/watchers/open_issues (and best-effort counts for contributors) and persist via PostgREST.
+  - Flags: `--org/--repo --token --postgrest-url --persist --max-workers`.
+- Web UI: projects list and project detail now display `primary_language`, `total_loc`, and `stars/forks`.
+
 ### Changed
 - OSS scanner: corrected `pip-audit` usage to `-r <requirements*.txt> -f json`, tolerate non-zero exits when vulns are found, and fallback to `python -m pip_audit` when the CLI is not in PATH.
 - OSS scanner: for Node/Python, OSV scanning now targets lockfiles only; for Java manifests (`pom.xml`, Gradle), OSV scans the repository recursively (`osv-scanner -r`) for better resolution.
@@ -59,6 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Option B: automatic HTTP RubyGems fallback if HTTPS install fails (last resort, insecure).
   - Option A (alternative): support `--build-arg CORP_CA_B64=<base64 PEM>` to trust a corporate root CA during build.
 
+- Orchestrator: switched to streaming child process output (stdout+stderr) live to stdout and log files, so UI SSE shows real-time logs during scans. Logs are now written under `REPORT_DIR/logs` when `REPORT_DIR` is provided (e.g., by the server), otherwise under repo `logs/`.
+- Orchestrator: summary now writes to `REPORT_DIR/markdown/orchestration_summary.md` when `REPORT_DIR` is provided, preserving artifacts in the server-mounted runs directory.
+- Server runner: after container completion, prefers persisting `markdown/orchestration_summary.md` when present, falling back to `shaihulu_summary.md`. Scan status now reflects presence of the orchestrator summary.
+
+- Server runner: force scanner container platform to `linux/amd64` when creating the container to match CodeQL CLI binary architecture and avoid Rosetta/loader errors on Apple Silicon hosts.
+
 ### Planned
 - Add structured, parseable output (e.g., SARIF/JSON) and a consolidated summary report.
 - Add CI workflow and containerized execution (Docker) with pinned tool versions.
@@ -69,6 +144,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resolved Semgrep rules path to use absolute `semgrep-rules/` directory relative to the project, avoiding CWD issues.
 - Prevented OSV extractor errors by avoiding direct scans of `package.json`; scanning is restricted to lockfiles, with `npm audit` as fallback.
 - Eliminated false "pip-audit not installed" failures by correcting flags and adding a module fallback when PATH resolution fails.
+
+- CodeQL CLI detection inside scanner container:
+  - Fixed PATH to include `/opt/codeql` so `codeql` binary is found.
+  - Built scanner image for `linux/amd64` to match the CodeQL CLI binary architecture; Docker Compose updated to run `scanner`/`seeder` with `platform: linux/amd64` to avoid architecture mismatch (Rosetta/QEMU errors).
+
+- Dashboard severity totals: `api.codeql_org_severity_totals` now `COALESCE`s null sums to `0` so empty datasets return numeric zeros instead of nulls.
+
+### Changed
+- CodeQL scanner: dynamic language detection and normalization to CodeQL-supported languages.
+  - Normalizes common synonyms (e.g., `typescript` → `javascript`, `kotlin` → `java`, `c`/`c++`/`cc`/`cxx` → `cpp`).
+  - Ignores unsupported languages with a diagnostic note.
+  - Adds diagnostics in per-repo markdown: detected languages and any explicit normalization.
+  - Honors `--skip-autobuild` by passing `--no-autobuild` to CodeQL database create for compiled languages (or when a custom `--build-command` is provided).
 
 ## [0.3.1] - 2025-09-12
 

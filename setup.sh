@@ -7,6 +7,99 @@
 set -Eeuo pipefail
 
 PROJECT_NAME=${PROJECT_NAME:-portal}
+
+# Seed engagement snapshot (stars, forks, watchers, open issues) via scan_engagement.py
+seed_engagement() {
+  local org token
+  org=${GITHUB_ORG:-}
+  token=${GITHUB_TOKEN:-}
+  if [[ -z "$org" || -z "$token" ]]; then
+    warn "GITHUB_ORG/GITHUB_TOKEN not set in environment/.env; skipping engagement seeding"
+    return 0
+  fi
+  info "Seeding engagement snapshot for '${org}' via PostgREST"
+  ${COMPOSE} build scanner
+  ${COMPOSE} run --rm --no-deps --entrypoint sh seeder -lc \
+    "python scan_engagement.py \
+       --org \"${org}\" \
+       --token \"${token}\" \
+       --persist \
+       --postgrest-url http://postgrest:3000 \
+       --max-workers ${ENGAGEMENT_MAX_WORKERS:-3} -v"
+}
+
+# Extract total count from a curl -D - response's Content-Range header
+_extract_count() {
+  # reads full curl output (headers+body) on stdin
+  # returns the total after '/' in Content-Range: e.g., "0-9/52" -> 52
+  # if not found, prints empty string
+  tr -d '\r' | awk -F'/' 'BEGIN{IGNORECASE=1} /^Content-Range:/ {print $2}' | awk '{print $1}' | tail -1
+}
+
+# Verify languages and LOC were persisted; non-fatal and prints a short summary
+verify_seed() {
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl not found; skipping verification"
+    return 0
+  fi
+  local base
+  base=${POSTGREST_VERIFY_URL:-http://localhost:3001}
+  info "Verifying persisted data via PostgREST at ${base} (non-fatal checks)"
+
+  # Count projects with primary_language set
+  local resp1 primary_lang_count
+  resp1=$(curl -sS -D - -H "Prefer: count=exact" "${base}/projects?select=id&primary_language=is.not.null" || true)
+  primary_lang_count=$(printf "%s" "$resp1" | _extract_count)
+  if [[ -z "$primary_lang_count" ]]; then
+    warn "Could not determine count of projects with primary_language (no Content-Range)."
+  fi
+
+  # Count projects with total_loc > 0
+  local resp2 loc_count
+  resp2=$(curl -sS -D - -H "Prefer: count=exact" "${base}/projects?select=id&total_loc=gt.0" || true)
+  loc_count=$(printf "%s" "$resp2" | _extract_count)
+  if [[ -z "$loc_count" ]]; then
+    warn "Could not determine count of projects with total_loc>0 (no Content-Range)."
+  fi
+
+  # Count total project_languages rows
+  local resp3 lang_rows
+  resp3=$(curl -sS -D - -H "Prefer: count=exact" "${base}/project_languages?select=id" || true)
+  lang_rows=$(printf "%s" "$resp3" | _extract_count)
+  if [[ -z "$lang_rows" ]]; then
+    warn "Could not determine count of project_languages rows (no Content-Range)."
+  fi
+
+  # Engagement: projects with stars set; projects with stars > 0
+  local resp4 stars_set resp5 stars_gt0
+  resp4=$(curl -sS -D - -H "Prefer: count=exact" "${base}/projects?select=id&stars=is.not.null" || true)
+  stars_set=$(printf "%s" "$resp4" | _extract_count)
+  if [[ -z "$stars_set" ]]; then
+    warn "Could not determine count of projects with stars set (no Content-Range)."
+  fi
+  resp5=$(curl -sS -D - -H "Prefer: count=exact" "${base}/projects?select=id&stars=gt.0" || true)
+  stars_gt0=$(printf "%s" "$resp5" | _extract_count)
+  if [[ -z "$stars_gt0" ]]; then
+    warn "Could not determine count of projects with stars>0 (no Content-Range)."
+  fi
+
+  # Engagement: total snapshot rows
+  local resp6 snap_rows
+  resp6=$(curl -sS -D - -H "Prefer: count=exact" "${base}/project_engagement_snapshots?select=id" || true)
+  snap_rows=$(printf "%s" "$resp6" | _extract_count)
+  if [[ -z "$snap_rows" ]]; then
+    warn "Could not determine count of project_engagement_snapshots rows (no Content-Range)."
+  fi
+
+  echo ""
+  info "Verification summary:"
+  info "- Projects with primary_language set: ${primary_lang_count:-unknown}"
+  info "- Projects with total_loc > 0:       ${loc_count:-unknown}"
+  info "- project_languages rows total:      ${lang_rows:-unknown}"
+  info "- Projects with stars set:           ${stars_set:-unknown}"
+  info "- Projects with stars > 0:           ${stars_gt0:-unknown}"
+  info "- engagement snapshot rows total:    ${snap_rows:-unknown}"
+}
 COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.portal.yml}
 # If .env exists, pass it explicitly to docker compose for interpolation
 if [[ -f ./.env ]]; then
@@ -78,6 +171,56 @@ seed_projects() {
        --init-only -v"
 }
 
+# Seed programming languages (bytes) to PostgREST via scan_oss.py
+seed_languages() {
+  local org token
+  org=${GITHUB_ORG:-}
+  token=${GITHUB_TOKEN:-}
+  if [[ -z "$org" || -z "$token" ]]; then
+    warn "GITHUB_ORG/GITHUB_TOKEN not set in environment/.env; skipping language seeding"
+    return 0
+  fi
+  info "Seeding repository languages (bytes) for '${org}' via PostgREST"
+  # Ensure latest scanner image (harmless if already built)
+  ${COMPOSE} build scanner
+  ${COMPOSE} run --rm --no-deps --entrypoint sh seeder -lc \
+    "python scan_oss.py \
+       --org \"${org}\" \
+       --token \"${token}\" \
+       --use-graphql \
+       --include-archived --include-forks \
+       --enable-syft \
+       --enable-grype \
+       --grype-scan-mode both \
+       --parse-osv-cvss \
+       --persist-languages \
+       --postgrest-url http://postgrest:3000 \
+       --max-workers ${OSS_MAX_WORKERS:-3} -v"
+}
+
+# Seed SAST-relevant LOC and file counts per language via scan_linecount.py
+seed_loc() {
+  local org token
+  org=${GITHUB_ORG:-}
+  token=${GITHUB_TOKEN:-}
+  if [[ -z "$org" || -z "$token" ]]; then
+    warn "GITHUB_ORG/GITHUB_TOKEN not set in environment/.env; skipping LOC seeding"
+    return 0
+  fi
+  info "Seeding per-language LOC/files for '${org}' via PostgREST"
+  # Ensure latest scanner image (harmless if already built)
+  ${COMPOSE} build scanner
+  ${COMPOSE} run --rm --no-deps --entrypoint sh seeder -lc \
+    "python scan_linecount.py \
+       --org \"${org}\" \
+       --token \"${token}\" \
+       --include-archived --include-forks \
+       --persist-loc \
+       --postgrest-url http://postgrest:3000 \
+       --max-workers ${LINECOUNT_MAX_WORKERS:-3} \
+       --use-cloc -v"
+}
+
 main() {
   info "Checking prerequisites..."
   require docker
@@ -109,6 +252,12 @@ main() {
   wait_for_postgrest
 
   seed_projects
+  seed_languages
+  seed_loc
+  seed_engagement
+
+  # Print non-fatal verification summary
+  verify_seed
 
   info "Done."
   info "Portal web:    http://localhost:5173"

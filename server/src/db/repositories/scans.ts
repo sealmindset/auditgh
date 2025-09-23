@@ -45,3 +45,21 @@ export async function listRecentScans(limit = 50): Promise<Scan[]> {
   const { rows } = await pool.query<Scan>('select * from scans order by created_at desc limit $1', [limit]);
   return rows;
 }
+
+export async function getLatestScanByProject(projectId: string): Promise<Scan | null> {
+  const q = `select * from scans
+             where project_id = $1 and status = 'success'
+             order by created_at desc
+             limit 1`;
+  const { rows } = await pool.query<Scan>(q, [projectId]);
+  return rows[0] || null;
+}
+
+export async function listRecentScansByProject(projectId: string, limit = 10): Promise<Scan[]> {
+  const q = `select * from scans
+             where project_id = $1
+             order by created_at desc
+             limit $2`;
+  const { rows } = await pool.query<Scan>(q, [projectId, limit]);
+  return rows;
+}

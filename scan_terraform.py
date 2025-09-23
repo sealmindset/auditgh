@@ -739,6 +739,13 @@ def main():
     parser.add_argument('--output-dir', type=str, default=config.REPORT_DIR, help=f'Output directory (default: {config.REPORT_DIR})')
     parser.add_argument('--include-forks', action='store_true', help='Include forked repositories')
     parser.add_argument('--include-archived', action='store_true', help='Include archived repositories')
+    # Concurrency control
+    try:
+        default_max_workers = int(os.getenv("TF_MAX_WORKERS") or os.getenv("SCAN_MAX_WORKERS") or 5)
+    except Exception:
+        default_max_workers = 5
+    parser.add_argument('--max-workers', type=int, default=default_max_workers,
+                        help=f'Max worker threads (default: {default_max_workers}; env TF_MAX_WORKERS or SCAN_MAX_WORKERS)')
     parser.add_argument('--with-trivy-fs', action='store_true', help='Also run trivy fs (slower)')
     # Checkov network/module handling
     parser.add_argument('--allow-guidelines', action='store_true', help='Allow Checkov to fetch guidelines (may hit Bridgecrew API)')
@@ -807,7 +814,7 @@ def main():
         refresh_epss(epss_cache)
 
     results: List[Dict[str, Any]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         future_to_repo = {executor.submit(
             process_repo,
             repo,

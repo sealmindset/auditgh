@@ -62,6 +62,11 @@ SCANNER_IMAGE=auditgh-scanner:latest
 GITHUB_ORG=
 GITHUB_TOKEN=
 
+# GitHub rate-limit tuning (adaptive throttle)
+# Target ~50% of the available budget and use a minimum interval of 0.5s/request.
+GITHUB_TARGET_UTILIZATION=0.5
+GITHUB_MIN_INTERVAL=0.5
+
 # Optional Redis (only if you run the redis profile)
 REDIS_URL=redis://redis:6379/0
 EOF

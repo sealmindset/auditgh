@@ -662,6 +662,13 @@ def main():
     parser.add_argument('--include-archived', action='store_true', help='Include archived repositories (default: on)')
     parser.add_argument('-v', '--verbose', action='count', default=1, help='Increase verbosity')
     parser.add_argument('-q', '--quiet', action='store_true', help='Suppress output')
+    # Concurrency control
+    try:
+        default_max_workers = int(os.getenv("CICD_MAX_WORKERS") or os.getenv("SCAN_MAX_WORKERS") or 5)
+    except Exception:
+        default_max_workers = 5
+    parser.add_argument('--max-workers', type=int, default=default_max_workers,
+                        help=f'Max worker threads (default: {default_max_workers}; env CICD_MAX_WORKERS or SCAN_MAX_WORKERS)')
 
     args = parser.parse_args()
 
@@ -707,7 +714,7 @@ def main():
 
     # Process repos
     stats: List[Dict[str, Any]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         future_to_repo = {executor.submit(process_repo, session, repo, config.REPORT_DIR): repo for repo in repos}
         for future in concurrent.futures.as_completed(future_to_repo):
             repo = future_to_repo[future]

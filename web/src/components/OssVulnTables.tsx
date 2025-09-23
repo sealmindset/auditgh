@@ -165,8 +165,8 @@ export default function OssVulnTables({ repoName }: { repoName: string | null })
               <DataTable
                 data={filteredSummary}
                 columns={columnsSummary}
-                pageSizeOptions={[5, 10, 25]}
-                defaultPageSize={5}
+                pageSizeOptions={[10, 25, 50]}
+                defaultPageSize={10}
                 filterKeys={['package', 'version', 'max_severity', 'description', 'fixed_version', 'mitigation', 'count']}
                 searchPlaceholder="Search summary…"
               />
@@ -181,8 +181,8 @@ export default function OssVulnTables({ repoName }: { repoName: string | null })
               <DataTable
                 data={filteredMultiple}
                 columns={columnsMultiple}
-                pageSizeOptions={[5, 10, 25]}
-                defaultPageSize={5}
+                pageSizeOptions={[10, 25, 50]}
+                defaultPageSize={10}
                 filterKeys={['package', 'version', 'max_severity', 'description', 'fixed_version', 'mitigation', 'count']}
                 searchPlaceholder="Search multiple…"
               />

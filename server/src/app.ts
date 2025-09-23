@@ -9,6 +9,8 @@ import { authRouter } from './auth/routes.js';
 import { attachDevBypass } from './auth/middleware.js';
 import { projectsRouter } from './api/routes/projects.js';
 import { scansRouter } from './api/routes/scans.js';
+import { codeqlRouter } from './api/routes/codeql.js';
+import { dashboardRouter } from './api/routes/dashboard.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 export function createApp() {
@@ -32,6 +34,8 @@ export function createApp() {
   app.use('/auth', authRouter);
   app.use('/api/projects', projectsRouter);
   app.use('/api/scans', scansRouter);
+  app.use('/api/scans/:id/codeql', codeqlRouter);
+  app.use('/api/dashboard', dashboardRouter);
 
   // Not found
   app.use((_: express.Request, res: express.Response) => {

@@ -159,6 +159,47 @@ Outputs:
 - Per-scanner reports are written to their respective folders (e.g., `codeql_reports/`, `oss_reports/`, `terraform_reports/`, `ci_reports/`, `secrets_reports/`, `hardcoded_ips_reports/`, `contributors_reports/`, `binaries_reports/`).
 - Per-scanner reports are written to their respective folders (e.g., `codeql_reports/`, `oss_reports/`, `terraform_reports/`, `ci_reports/`, `secrets_reports/`, `hardcoded_ips_reports/`, `contributors_reports/`, `binaries_reports/`, `linecount_reports/`).
 
+### Deep CodeQL in controlled waves (recommended for org-wide)
+
+This approach increases stability for large org runs by limiting concurrency and launching small waves.
+
+Prerequisites:
+
+- Ensure `.env` sets:
+  - `SCANNER_IMAGE=auditgh-scanner:latest`
+  - `GITHUB_TOKEN`, `GITHUB_ORG`
+  - `CODEQL_RAM_MIB` (e.g., `16384`) and `CODEQL_THREADS` (e.g., `1`)
+- Build the scanner image explicitly for linux/amd64 (required by the server runner):
+
+```bash
+docker buildx build --platform linux/amd64 -t auditgh-scanner:latest .
+```
+
+- Restart the server container to pick up the image:
+
+```bash
+docker compose -f docker-compose.portal.yml -p portal restart server
+```
+
+Launch a wave of deep CodeQL scans (10 repos, max 2 concurrent):
+
+```bash
+python3 scripts/launch_codeql_wave.py --wave-size 10 --max-concurrent 2
+```
+
+What it does:
+
+- Selects active projects with a `repo_url` from PostgREST.
+- Auto-detects languages (no languages need to be passed).
+- Submits `POST /api/scans/` with `profile=deep`, `scanners=["codeql"]`, `scope=repo`.
+- Waits for running scans to drop below the `--max-concurrent` cap before starting the next.
+
+Monitor progress:
+
+- Running scans: `http://localhost:3001/scans?select=id&status=eq.running`
+- Recent scans: `http://localhost:8080/api/scans`
+- Stream logs: `http://localhost:8080/api/scans/<scan_id>/stream`
+
 ### Binaries/Executables Scanner
 
 The `binaries` scanner inventories binary-like and executable files in repositories and writes per-repo JSON/Markdown reports into `binaries_reports/<repo>/` and an org-level summary at `binaries_reports/binaries_scan_summary.md`.

@@ -18,6 +18,7 @@ RUN apt-get update -yqq && apt-get install -yqq --no-install-recommends \
     ca-certificates \
     gnupg \
     jq \
+    cloc \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional: provide a corporate root CA (Base64-encoded PEM) at build time to trust SSL interception proxies
@@ -89,7 +90,7 @@ ENV CODEQL_VERSION=2.18.4
 RUN wget -q https://github.com/github/codeql-cli-binaries/releases/download/v${CODEQL_VERSION}/codeql-linux64.zip -O /tmp/codeql.zip \
     && unzip -q /tmp/codeql.zip -d /opt \
     && rm /tmp/codeql.zip
-ENV PATH="${PATH}:/opt/codeql/codeql"
+ENV PATH="${PATH}:/opt/codeql"
 
 # Set working directory
 WORKDIR /app

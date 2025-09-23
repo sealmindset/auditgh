@@ -7,6 +7,8 @@ import path from 'path';
 import { config } from '../config/env.js';
 import { createScanArtifact } from '../db/repositories/scan_artifacts.js';
 import { createFinding } from '../db/repositories/findings.js';
+import { ingestCodeqlFindings } from '../services/codeql_ingest.js';
+import { ingestOssFindings } from '../services/oss_ingest.js';
 
 export type ScanProgressEvent = {
   type: 'log' | 'status' | 'done' | 'error';
@@ -20,6 +22,9 @@ type RunOptions = {
   scanners?: string[];
   scope?: 'org' | 'repo';
   repo?: string;
+  codeql_languages?: string[];
+  codeql_skip_autobuild?: boolean;
+  codeql_recreate_db?: boolean;
 };
 
 class InMemoryScanRunner {
@@ -137,7 +142,14 @@ class InMemoryScanRunner {
       `GITHUB_TOKEN=${process.env.GITHUB_TOKEN || ''}`,
       `GITHUB_ORG=${process.env.GITHUB_ORG || ''}`,
       `GITHUB_API=${process.env.GITHUB_API || 'https://api.github.com'}`,
-      'REPORT_DIR=/work/reports'
+      'REPORT_DIR=/work/reports',
+      // Pass-through CodeQL resource tuning so scans launched from the UI can avoid OOM
+      `CODEQL_RAM_MIB=${process.env.CODEQL_RAM_MIB || ''}`,
+      `CODEQL_THREADS=${process.env.CODEQL_THREADS || ''}`,
+      // Optional orchestrator language override (env-level)
+      `ORCHESTRATOR_CODEQL_LANGUAGES=${process.env.ORCHESTRATOR_CODEQL_LANGUAGES || ''}`,
+      // Optional orchestrator skip autobuild override (env-level)
+      `ORCHESTRATOR_CODEQL_SKIP_AUTOBUILD=${process.env.ORCHESTRATOR_CODEQL_SKIP_AUTOBUILD || ''}`,
     ];
 
     try {
@@ -151,6 +163,15 @@ class InMemoryScanRunner {
       } else {
         cmd.push('--org', process.env.GITHUB_ORG || '');
       }
+      if (opts?.codeql_languages && opts.codeql_languages.length > 0) {
+        cmd.push('--codeql-languages', opts.codeql_languages.join(','));
+      }
+      if (opts?.codeql_skip_autobuild) {
+        cmd.push('--codeql-skip-autobuild');
+      }
+      if (opts?.codeql_recreate_db) {
+        cmd.push('--codeql-recreate-db');
+      }
       const container = await this.docker.createContainer({
         Image: config.scannerImage!,
         Entrypoint: ['python'],
@@ -158,6 +179,8 @@ class InMemoryScanRunner {
         Env: env,
         WorkingDir: '/app',
         Tty: true,
+        // Force amd64 to match CodeQL CLI binary architecture inside the scanner image
+        platform: 'linux/amd64',
         HostConfig: { Binds: binds, AutoRemove: true }
       });
 
@@ -183,25 +206,45 @@ class InMemoryScanRunner {
       }
 
       // Persist artifacts & finding summary
-      let summaryPath = path.join(scanDir, 'shaihulu_summary.md');
+      // Prefer orchestrator summary when available; fall back to Shai-Hulud summary
+      const candidates = [
+        path.join(scanDir, 'markdown', 'orchestration_summary.md'),
+        path.join(scanDir, 'orchestration_summary.md'),
+        path.join(scanDir, 'shaihulu_summary.md'),
+        path.join(scanDir, 'shaihulud_reports', 'shaihulu_summary.md'),
+      ];
+      let summaryPath: string | null = null;
+      for (const pth of candidates) {
+        if (fs.existsSync(pth)) { summaryPath = pth; break; }
+      }
       try {
-        if (!fs.existsSync(summaryPath)) {
-          const alt = path.join(scanDir, 'shaihulud_reports', 'shaihulu_summary.md');
-          if (fs.existsSync(alt)) summaryPath = alt;
-        }
-        if (fs.existsSync(summaryPath)) {
+        if (summaryPath) {
           const stat = fs.statSync(summaryPath);
           await createScanArtifact({
             scan_id: scanId,
-            name: 'shaihulu_summary.md',
+            name: path.basename(summaryPath),
             path: summaryPath,
             mime: 'text/markdown',
             size_bytes: stat.size,
           });
-          await this.parseAndPersistShaihulud(scan, summaryPath);
+          // Parse Shai-Hulud summary only for that specific file name
+          if (path.basename(summaryPath) === 'shaihulu_summary.md') {
+            await this.parseAndPersistShaihulud(scan, summaryPath);
+          }
           await updateScanStatus(scanId, 'success', { finished_at: new Date(), summary_md_path: summaryPath });
         } else {
           await updateScanStatus(scanId, 'success', { finished_at: new Date() });
+        }
+        // Persist CodeQL + OSS atomic findings to DB (best-effort)
+        try {
+          await ingestCodeqlFindings(scan);
+        } catch (e) {
+          logger.warn({ e, scanId }, 'CodeQL ingestion failed');
+        }
+        try {
+          await ingestOssFindings(scan);
+        } catch (e) {
+          logger.warn({ e, scanId }, 'OSS ingestion failed');
         }
         this.appendLog(scanId, 'Scan completed successfully');
         this.broadcast(scanId, { type: 'done', message: 'success', timestamp: new Date().toISOString() });

@@ -38,6 +38,13 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+# Ensure CodeQL path is visible inside container when present
+try:
+    if os.path.isdir('/opt/codeql') and '/opt/codeql' not in os.environ.get('PATH', ''):
+        os.environ['PATH'] = os.environ.get('PATH', '') + os.pathsep + '/opt/codeql'
+except Exception:
+    pass
+
 # -----------------
 # Config
 # -----------------
@@ -61,6 +68,15 @@ class CodeQLConfig:
             self.MAX_WORKERS = int(os.getenv("CODEQL_MAX_WORKERS", "4"))
         except Exception:
             self.MAX_WORKERS = 4
+        # Resource tuning defaults (env fallback)
+        try:
+            self.RAM_MIB_DEFAULT = int(os.getenv("CODEQL_RAM_MIB", "0"))
+        except Exception:
+            self.RAM_MIB_DEFAULT = 0
+        try:
+            self.THREADS_DEFAULT = int(os.getenv("CODEQL_THREADS", "0"))
+        except Exception:
+            self.THREADS_DEFAULT = 0
         self.CLONE_DIR: Optional[str] = None
 
 config: Optional[CodeQLConfig] = None
@@ -266,12 +282,49 @@ def clone_repo(repo: Dict[str, Any]) -> Optional[str]:
         return None
 
 # -----------------
-# Language detection
+# Language normalization and detection
 # -----------------
+
+# CodeQL-supported language keys
+_SUPPORTED_LANGS: Set[str] = {
+    'cpp', 'csharp', 'go', 'java', 'javascript', 'python', 'ruby', 'swift'
+}
+
+# Common synonyms -> CodeQL language keys
+_LANG_SYNONYMS: Dict[str, str] = {
+    'ts': 'javascript', 'tsx': 'javascript', 'typescript': 'javascript', 'js': 'javascript',
+    'kt': 'java', 'kts': 'java', 'kotlin': 'java',
+    'c': 'cpp', 'c++': 'cpp', 'cc': 'cpp', 'cxx': 'cpp',
+    'golang': 'go',
+    'cs': 'csharp'
+}
+
+def _normalize_languages(input_langs: List[str]) -> Tuple[List[str], List[str]]:
+    """Return (normalized_langs, ignored_notes).
+
+    - Lowercases inputs
+    - Maps common synonyms (e.g., typescript->javascript, kotlin->java, c/c++->cpp)
+    - Filters to CodeQL-supported languages
+    - Deduplicates and returns sorted list
+    - Returns notes for ignored/unsupported inputs
+    """
+    out: Set[str] = set()
+    notes: List[str] = []
+    for raw in (input_langs or []):
+        l = (raw or '').strip().lower()
+        if not l:
+            continue
+        mapped = _LANG_SYNONYMS.get(l, l)
+        if mapped in _SUPPORTED_LANGS:
+            out.add(mapped)
+        else:
+            notes.append(f"Ignoring unsupported language for CodeQL: {raw}")
+    return sorted(out), notes
 
 def detect_languages(repo_path: str, explicit: Optional[List[str]] = None) -> List[str]:
     if explicit:
-        return [l.lower() for l in explicit]
+        normalized, _ = _normalize_languages([l for l in explicit])
+        return normalized
     langs: Set[str] = set()
     for root, _, files in os.walk(repo_path):
         for fname in files:
@@ -302,7 +355,25 @@ def detect_languages(repo_path: str, explicit: Optional[List[str]] = None) -> Li
                 langs.add('swift')
         if len(langs) >= 6:
             break
-    return sorted(langs)
+    # Final normalization pass (no-op for our current detection, but ensures consistency)
+    normalized, _ = _normalize_languages(sorted(langs))
+    return normalized
+
+def resolve_languages(repo_path: str, explicit: Optional[List[str]] = None) -> Tuple[List[str], List[str]]:
+    """Resolve languages to scan and return (langs, diagnostics).
+
+    If explicit list provided, normalize and filter. Otherwise, detect from repo contents.
+    """
+    if explicit:
+        normalized, notes = _normalize_languages([l for l in explicit])
+        diags = []
+        if notes:
+            diags.extend(notes)
+        diags.append(f"Explicit languages normalized to: {', '.join(normalized) if normalized else '(none)'}")
+        return normalized, diags
+    detected = detect_languages(repo_path)
+    diags = [f"Detected languages: {', '.join(detected) if detected else '(none)'}"]
+    return detected, diags
 
 # -----------------
 # CodeQL execution
@@ -466,11 +537,19 @@ def codeql_database_create(
     skip_autobuild: bool = False,
     build_command: Optional[str] = None,
     timeout: Optional[int] = None,
+    ram_mib: Optional[int] = None,
+    threads: Optional[int] = None,
 ) -> Tuple[bool, str]:
     os.makedirs(os.path.dirname(db_dir), exist_ok=True)
     if os.path.exists(db_dir) and not recreate:
         logging.info(f"Reusing cached CodeQL DB: {db_dir}")
-        return True, "cached"
+        # Ensure cached DB is finalized; if not, purge and recreate
+        f_ok, f_msg = codeql_database_finalize(db_dir, timeout)
+        if not f_ok:
+            logging.warning(f"Cached DB not finalized; purging and recreating: {f_msg}")
+            shutil.rmtree(db_dir, ignore_errors=True)
+        else:
+            return True, "cached"
     if os.path.exists(db_dir) and recreate:
         shutil.rmtree(db_dir, ignore_errors=True)
     # Optional pre-build
@@ -486,8 +565,15 @@ def codeql_database_create(
         except Exception as e:
             return False, str(e)
     cmd = ['codeql', 'database', 'create', db_dir, '--language', lang, '--source-root', repo_path, '--overwrite']
+    if ram_mib and ram_mib > 0:
+        cmd += ['--ram', str(ram_mib)]
+    if threads and threads > 0:
+        cmd += ['--threads', str(threads)]
     if (lang in {'java', 'cpp', 'csharp'}) and not skip_autobuild and not build_command and _supports_autobuild():
         cmd.append('--autobuild')
+    elif (lang in {'java', 'cpp', 'csharp'}) and (skip_autobuild or build_command):
+        # Instruct CodeQL that a build step is provided (no-op) to avoid default extractor autobuild
+        cmd += ['--command', 'true']
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=repo_path, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -496,7 +582,7 @@ def codeql_database_create(
         return False, result.stderr
     return True, result.stdout
 
-def codeql_database_analyze(db_dir: str, lang: str, suite: str, sarif_out: str, timeout: Optional[int] = None) -> Tuple[bool, str]:
+def codeql_database_analyze(db_dir: str, lang: str, suite: str, sarif_out: str, timeout: Optional[int] = None, ram_mib: Optional[int] = None, threads: Optional[int] = None) -> Tuple[bool, str]:
     # Try requested suite, then fall back to common suites if needed
     suites_to_try: List[str] = []
     if suite:
@@ -516,6 +602,10 @@ def codeql_database_analyze(db_dir: str, lang: str, suite: str, sarif_out: str, 
         else:
             pack = codeql_pack_for_lang(lang, s)
             cmd = ['codeql', 'database', 'analyze', db_dir, pack, '--format', 'sarifv2.1.0', '--output', sarif_out, '--download']
+        if ram_mib and ram_mib > 0:
+            cmd += ['--ram', str(ram_mib)]
+        if threads and threads > 0:
+            cmd += ['--threads', str(threads)]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, cwd=db_dir, timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -761,6 +851,8 @@ def run_codeql_on_repo(
     json_only: bool = False,
     sarif_only: bool = False,
     top_n: int = 300,
+    ram_mib: Optional[int] = None,
+    threads: Optional[int] = None,
 ) -> Dict[str, Any]:
     os.makedirs(report_dir, exist_ok=True)
     repo_name = repo['name']
@@ -778,7 +870,7 @@ def run_codeql_on_repo(
         return {"success": False, "error": "Clone failed"}
 
     try:
-        langs = detect_languages(repo_path, languages)
+        langs, lang_diags = resolve_languages(repo_path, languages)
         if not langs:
             md_path = os.path.join(repo_dir, f"{repo_name}_codeql.md")
             with open(md_path, 'w') as f:
@@ -788,6 +880,14 @@ def run_codeql_on_repo(
         all_findings: List[Dict[str, Any]] = []
         sarif_paths: List[str] = []
         diagnostics: List[str] = []
+        # Resource diagnostics
+        if (ram_mib and ram_mib > 0) or (threads and threads > 0):
+            diagnostics.append(
+                f"Resource tuning: --ram={ram_mib or 0} --threads={threads or 0}\n"
+            )
+        # Record language resolution diagnostics
+        if lang_diags:
+            diagnostics.extend([d + "\n" for d in lang_diags])
         for lang in langs:
             db_dir = codeql_database_dir(repo_name, lang)
             ok, db_msg = codeql_database_create(
@@ -798,6 +898,8 @@ def run_codeql_on_repo(
                 skip_autobuild=skip_autobuild,
                 build_command=build_command,
                 timeout=timeout_seconds,
+                ram_mib=ram_mib,
+                threads=threads,
             )
             if not ok:
                 logging.warning(f"Skipping analyze for {lang} due to DB create failure: {db_msg}")
@@ -813,7 +915,15 @@ def run_codeql_on_repo(
                 logging.warning(f"Failed to download CodeQL pack for {lang}: {p_msg}")
                 diagnostics.append(f"[{lang}] Pack download failed: {p_msg}\n")
             sarif_out = os.path.join(repo_dir, f"{repo_name}_codeql_{lang}.sarif")
-            ok, an_msg = codeql_database_analyze(db_dir, lang, suite or config.QUERY_SUITE, sarif_out, timeout=timeout_seconds)
+            ok, an_msg = codeql_database_analyze(
+                db_dir,
+                lang,
+                suite or config.QUERY_SUITE,
+                sarif_out,
+                timeout=timeout_seconds,
+                ram_mib=ram_mib,
+                threads=threads,
+            )
             if not ok:
                 logging.warning(f"Analyze failed for {lang}: {an_msg}")
                 diagnostics.append(f"[{lang}] Analyze failed: {an_msg}\n")
@@ -956,6 +1066,8 @@ def main():
     p.add_argument('--timeout-seconds', type=int, default=0, help='Timeout in seconds for CodeQL steps (0=disabled)')
     p.add_argument('--skip-autobuild', action='store_true', help='Disable CodeQL --autobuild for compiled languages')
     p.add_argument('--build-command', type=str, help='Custom build command to run before CodeQL DB create')
+    p.add_argument('--ram-mib', type=int, default=config.RAM_MIB_DEFAULT, help='RAM in MiB available to CodeQL (passed to --ram)')
+    p.add_argument('--threads', type=int, default=config.THREADS_DEFAULT, help='Threads for CodeQL analyze/create (passed to --threads)')
     p.add_argument('-v', '--verbose', action='count', default=1, help='Increase verbosity')
     p.add_argument('-q', '--quiet', action='store_true', help='Quiet mode')
     args = p.parse_args()
@@ -1010,6 +1122,8 @@ def main():
                 json_only=args.json_only,
                 sarif_only=args.sarif_only,
                 top_n=args.top_n,
+                ram_mib=(args.ram_mib if args.ram_mib and args.ram_mib > 0 else None),
+                threads=(args.threads if args.threads and args.threads > 0 else None),
             ): repo for repo in repos
         }
         for fut in concurrent.futures.as_completed(fut_to_repo):

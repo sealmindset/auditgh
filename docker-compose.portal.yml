@@ -67,6 +67,7 @@ services:
 
   # Optional: build the scanner image used by the server's docker runner
   scanner:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
@@ -75,6 +76,7 @@ services:
 
   # Periodic seeder: discovers repos and upserts projects via PostgREST, then sleeps
   seeder:
+    platform: linux/amd64
     image: auditgh-scanner:latest
     depends_on:
       db:

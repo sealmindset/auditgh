@@ -58,6 +58,10 @@ class LineCountConfig:
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": "auditgh-scan-linecount",
         }
+        # Feature toggles (overridable via CLI)
+        self.USE_SHEBANG_DETECTOR: bool = True
+        self.USE_GITHUB_BYTES: bool = True
+        self.USE_CLOC: bool = False
 
 
 config: Optional[LineCountConfig] = None
@@ -247,6 +251,37 @@ def _is_binary_by_sampling(path: str) -> bool:
     return False
 
 
+INTERPRETER_LANGUAGE_MAP: Dict[str, str] = {
+    # Common interpreters -> language name used in our reporting
+    'python': 'Python', 'python3': 'Python', 'python2': 'Python',
+    'node': 'JavaScript', 'nodejs': 'JavaScript', 'deno': 'JavaScript',
+    'bash': 'Shell', 'sh': 'Shell', 'zsh': 'Shell', 'ksh': 'Shell',
+    'pwsh': 'PowerShell', 'powershell': 'PowerShell',
+    'ruby': 'Ruby',
+    'perl': 'Perl',
+    'php': 'PHP',
+}
+
+def _detect_language_from_shebang(path: str) -> Optional[str]:
+    """Detect language using shebang for files without meaningful extension."""
+    try:
+        with open(path, 'rb') as f:
+            first = f.readline(200).decode('utf-8', errors='ignore').strip()
+        if not first.startswith('#!'):
+            return None
+        line = first[2:].strip()
+        # Examples: /usr/bin/env python, /bin/bash, env node
+        parts = line.split()
+        if not parts:
+            return None
+        cmd = parts[0]
+        if cmd.endswith('env') and len(parts) > 1:
+            cmd = parts[1]
+        interp = cmd.rsplit('/', 1)[-1].lower()
+        return INTERPRETER_LANGUAGE_MAP.get(interp)
+    except Exception:
+        return None
+
 def _count_lines_text(path: str, exclude_minified: bool) -> int:
     try:
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -259,6 +294,45 @@ def _count_lines_text(path: str, exclude_minified: bool) -> int:
         return len(lines)
     except Exception:
         return 0
+
+
+def _scan_with_cloc(repo_path: str):
+    """Run cloc and parse per-language code LOC and file counts.
+
+    Returns (total_loc, lang_loc, lang_files).
+    """
+    if not shutil.which('cloc'):
+        raise FileNotFoundError('cloc not found in PATH')
+    try:
+        # cloc JSON output includes keys per language with fields: nFiles, code, comment, blank
+        # Exclude header and SUM.
+        result = subprocess.run(
+            ['cloc', '--json', '--quiet', '--timeout', '0', repo_path],
+            capture_output=True, text=True, check=False
+        )
+        # cloc returns non-zero sometimes even with valid output; trust stdout if parseable
+        data = json.loads(result.stdout or '{}')
+        lang_loc = {}
+        lang_files = {}
+        total = 0
+        for k, v in (data.items() if isinstance(data, dict) else []):
+            if k in ('header', 'SUM'):
+                continue
+            try:
+                code = int(v.get('code', 0))
+                files = int(v.get('nFiles', 0))
+            except Exception:
+                continue
+            if code <= 0:
+                continue
+            lang_loc[k] = lang_loc.get(k, 0) + code
+            lang_files[k] = lang_files.get(k, 0) + files
+            total += code
+        return total, lang_loc, lang_files
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Failed to parse cloc JSON: {e}")
+    except Exception as e:
+        raise RuntimeError(f"cloc execution failed: {e}")
 
 
 def scan_repo_for_loc(repo_path: str, *, include_exts: Optional[Dict[str, str]] = None,
@@ -294,7 +368,14 @@ def scan_repo_for_loc(repo_path: str, *, include_exts: Optional[Dict[str, str]] 
                 continue
 
             ext = os.path.splitext(fname)[1]
-            if ext not in include_exts:
+            lang = None
+            if ext in include_exts:
+                lang = include_exts.get(ext)
+            elif config and getattr(config, 'USE_SHEBANG_DETECTOR', True):
+                # Try shebang-based detection for extensionless or unknown files
+                lang = _detect_language_from_shebang(path)
+                # If still unknown, skip
+            if not lang:
                 continue
 
             try:
@@ -313,7 +394,6 @@ def scan_repo_for_loc(repo_path: str, *, include_exts: Optional[Dict[str, str]] 
             if lines <= 0:
                 continue
 
-            lang = include_exts.get(ext, 'Other')
             total_loc += lines
             lang_loc[lang] = lang_loc.get(lang, 0) + lines
             lang_files[lang] = lang_files.get(lang, 0) + 1
@@ -378,7 +458,8 @@ def write_repo_report(repo: Dict[str, Any], repo_path: str, report_dir: str,
 # --------------
 
 def _persist_loc_to_postgrest(repo: Dict[str, Any], *, postgrest_url: str,
-                              lang_loc: Dict[str, int], lang_files: Dict[str, int]) -> None:
+                              lang_loc: Dict[str, int], lang_files: Dict[str, int],
+                              lang_bytes: Optional[Dict[str, int]] = None) -> None:
     try:
         base = postgrest_url.rstrip('/')
         name = repo.get('name')
@@ -396,6 +477,7 @@ def _persist_loc_to_postgrest(repo: Dict[str, Any], *, postgrest_url: str,
         for lang, loc in (lang_loc or {}).items():
             payload.append({
                 "language": lang,
+                "bytes": int((lang_bytes or {}).get(lang, 0)),
                 "loc": int(loc),
                 "files": int(lang_files.get(lang, 0)),
                 # bytes omitted; keep existing value from earlier languages upsert
@@ -425,17 +507,56 @@ def process_repo(repo: Dict[str, Any], report_dir: str, *, include_exts: Optiona
         return repo_name, 0
 
     try:
-        total_loc, lang_loc, lang_files = scan_repo_for_loc(
-            repo_path,
-            include_exts=include_exts,
-            exclude_dirs=exclude_dirs,
-            exclude_globs=exclude_globs,
-            exclude_minified=exclude_minified,
-            max_file_bytes=max_file_bytes,
-        )
+        # Optionally enrich with GitHub /languages bytes
+        lang_bytes: Dict[str, int] = {}
+        if config and getattr(config, 'USE_GITHUB_BYTES', True):
+            try:
+                full = repo.get('full_name') or f"{repo.get('owner',{}).get('login')}/{repo.get('name')}"
+                url = f"{config.GITHUB_API}/repos/{full}/languages"
+                r = request_with_rate_limit(make_session(), 'GET', url, timeout=20, logger=logging.getLogger('linecount.api'))
+                r.raise_for_status()
+                data = r.json() or {}
+                for k, v in (data.items() if isinstance(data, dict) else []):
+                    try:
+                        lang_bytes[str(k)] = int(v)
+                    except Exception:
+                        continue
+            except Exception as e:
+                logging.debug(f"Failed to fetch /languages for {repo_full}: {e}")
+
+        # Choose detection strategy: cloc if enabled and available, else internal walker
+        use_cloc = bool(config and getattr(config, 'USE_CLOC', False))
+        if use_cloc and shutil.which('cloc'):
+            try:
+                total_loc, lang_loc, lang_files = _scan_with_cloc(repo_path)
+            except Exception as e:
+                logging.warning(f"cloc failed for {repo_full}, falling back to internal scan: {e}")
+                total_loc, lang_loc, lang_files = scan_repo_for_loc(
+                    repo_path,
+                    include_exts=include_exts,
+                    exclude_dirs=exclude_dirs,
+                    exclude_globs=exclude_globs,
+                    exclude_minified=exclude_minified,
+                    max_file_bytes=max_file_bytes,
+                )
+        else:
+            total_loc, lang_loc, lang_files = scan_repo_for_loc(
+                repo_path,
+                include_exts=include_exts,
+                exclude_dirs=exclude_dirs,
+                exclude_globs=exclude_globs,
+                exclude_minified=exclude_minified,
+                max_file_bytes=max_file_bytes,
+            )
         write_repo_report(repo, repo_path, repo_report_dir, total_loc, lang_loc, lang_files)
         if persist_loc and postgrest_url:
-            _persist_loc_to_postgrest(repo, postgrest_url=postgrest_url, lang_loc=lang_loc, lang_files=lang_files)
+            _persist_loc_to_postgrest(
+                repo,
+                postgrest_url=postgrest_url,
+                lang_loc=lang_loc,
+                lang_files=lang_files,
+                lang_bytes=lang_bytes or None,
+            )
         return repo_name, total_loc
     except Exception as e:
         logging.error(f"Error processing repository {repo_full}: {e}")
@@ -491,6 +612,13 @@ def main():
                         help='Increase verbosity (can be specified multiple times)')
     parser.add_argument('-q', '--quiet', action='store_true',
                         help='Suppress output (overrides --verbose)')
+    # Concurrency control
+    try:
+        default_max_workers = int(os.getenv("LINECOUNT_MAX_WORKERS") or os.getenv("SCAN_MAX_WORKERS") or 5)
+    except Exception:
+        default_max_workers = 5
+    parser.add_argument('--max-workers', type=int, default=default_max_workers,
+                        help=f'Max worker threads (default: {default_max_workers}; env LINECOUNT_MAX_WORKERS or SCAN_MAX_WORKERS)')
 
     # Filters
     parser.add_argument('--include-ext', action='append', default=[],
@@ -503,6 +631,15 @@ def main():
                         help='Do not exclude minified JS/CSS by heuristic')
     parser.add_argument('--max-file-bytes', type=int, default=5_000_000,
                         help='Skip files larger than this (default: 5,000,000)')
+
+    # Feature toggles (Option A)
+    parser.add_argument('--no-shebang-detector', dest='use_shebang', action='store_false', default=True,
+                        help='Disable shebang-based language detection for extensionless files (enabled by default)')
+    parser.add_argument('--no-github-bytes', dest='use_github_bytes', action='store_false', default=True,
+                        help='Disable enrichment via GitHub /languages bytes (enabled by default)')
+    # Option C: cloc integration
+    parser.add_argument('--use-cloc', dest='use_cloc', action='store_true', default=False,
+                        help='Use cloc for language detection/LOC counting if available')
 
     # PostgREST persistence options
     parser.add_argument('--postgrest-url', type=str, help='Base URL for PostgREST (e.g., http://localhost:3001)')
@@ -527,6 +664,11 @@ def main():
     if args.output_dir != config.REPORT_DIR:
         config.REPORT_DIR = os.path.abspath(args.output_dir)
         logging.info(f"Using output directory: {config.REPORT_DIR}")
+
+    # Apply feature toggles
+    config.USE_SHEBANG_DETECTOR = bool(getattr(args, 'use_shebang', True))
+    config.USE_GITHUB_BYTES = bool(getattr(args, 'use_github_bytes', True))
+    config.USE_CLOC = bool(getattr(args, 'use_cloc', False))
 
     # Create report directory
     os.makedirs(config.REPORT_DIR, exist_ok=True)
@@ -573,7 +715,7 @@ def main():
 
     # Process repositories in parallel
     repo_counts: List[Tuple[str, int]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         future_to_repo = {executor.submit(
             process_repo,
             repo,

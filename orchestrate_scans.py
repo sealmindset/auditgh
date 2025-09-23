@@ -30,8 +30,11 @@ except Exception:  # pragma: no cover - optional dependency
 load_dotenv(override=True)
 
 REPO_ROOT = Path(__file__).resolve().parent
-LOGS_DIR = REPO_ROOT / "logs"
-SUMMARY_DIR = REPO_ROOT / "markdown"
+# If REPORT_DIR is provided (e.g., by the server orchestrator), write outputs into that mounted path
+REPORT_DIR_ENV = os.getenv("REPORT_DIR")
+BASE_OUT_DIR = Path(REPORT_DIR_ENV) if REPORT_DIR_ENV else REPO_ROOT
+LOGS_DIR = BASE_OUT_DIR / "logs"
+SUMMARY_DIR = BASE_OUT_DIR / "markdown"
 SUMMARY_FILE = SUMMARY_DIR / "orchestration_summary.md"
 
 # Known scanners and default output locations (for linking in the summary)
@@ -47,8 +50,23 @@ SCANNER_REPORT_LINKS: Dict[str, List[Path]] = {
     # binaries scanner summary
     "binaries": [REPO_ROOT / "binaries_reports" / "binaries_scan_summary.md"],
     "linecount": [REPO_ROOT / "linecount_reports" / "linecount_scan_summary.md"],
+    # engagement snapshots are persisted to PostgREST; no local report
+    "engagement": [],
+    # shai_hulud scan currently logs only; no markdown summary
+    "shai_hulud": [],
 }
 
+# Profile-based defaults for CodeQL query suite and timeout
+PROFILE_TO_SUITE = {
+    "fast": "code-scanning",
+    "balanced": "security-extended",
+    "deep": "security-and-quality",
+}
+PROFILE_TO_TIMEOUT = {
+    "fast": 1200,
+    "balanced": 1800,
+    "deep": 3600,
+}
 
 @dataclass
 class RunResult:
@@ -106,6 +124,8 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
         "contributors",
         "binaries",
         "linecount",
+        "engagement",
+        "shai_hulud",
     ]
 
     if args.only:
@@ -196,24 +216,56 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
 
     # codeql
     if "codeql" in scanners:
+        # Determine suite and timeout with precedence: CLI > env > profile defaults
+        suite_override = getattr(args, "codeql_query_suite", None) or os.getenv("ORCHESTRATOR_CODEQL_QUERY_SUITE")
+        suite = suite_override or PROFILE_TO_SUITE.get(args.profile, "code-scanning")
+        timeout_arg = getattr(args, "codeql_timeout_seconds", None)
+        env_timeout_raw = os.getenv("ORCHESTRATOR_CODEQL_TIMEOUT")
+        timeout_env: Optional[int] = None
+        try:
+            timeout_env = int(env_timeout_raw) if env_timeout_raw else None
+        except Exception:
+            timeout_env = None
+        timeout_seconds = (
+            timeout_arg if (isinstance(timeout_arg, int) and timeout_arg > 0)
+            else (timeout_env if (isinstance(timeout_env, int) and timeout_env > 0)
+                  else PROFILE_TO_TIMEOUT.get(args.profile, 1800))
+        )
+        # Optional language targeting (CLI > env). Comma-separated list becomes multiple --languages args
+        langs_csv = getattr(args, "codeql_languages", None) or os.getenv("ORCHESTRATOR_CODEQL_LANGUAGES")
+        langs: Optional[List[str]] = None
+        if isinstance(langs_csv, str) and langs_csv.strip():
+            langs = [s.strip() for s in langs_csv.split(",") if s.strip()]
+        # Optional skip autobuild for compiled languages (CLI OR env truthy)
+        skip_env_raw = os.getenv("ORCHESTRATOR_CODEQL_SKIP_AUTOBUILD", "")
+        skip_env = skip_env_raw.lower() in ("1", "true", "yes", "on")
+        skip_autobuild = bool(getattr(args, "codeql_skip_autobuild", False)) or skip_env
         cq_flags = [
             "--query-suite",
-            "code-scanning",
+            suite,
             "--max-workers",
             str(args.max_workers),
             "--top-n",
             "200",
             "--timeout-seconds",
-            "1800",
+            str(timeout_seconds),
         ]
         if args.profile == "deep" and not args.no_deep_codeql:
+            cq_flags += ["--recreate-db"]
+        # Optional recreate DB toggle (CLI)
+        if getattr(args, "codeql_recreate_db", False) and "--recreate-db" not in cq_flags:
             cq_flags += ["--recreate-db"]
         cmd = [sys.executable, str(REPO_ROOT / "scan_codeql.py")]
         if repo:
             cmd += ["--repo", repo]
         else:
             cmd += ["--org", org] + include_flags
-        cmd += cq_flags + vflags
+        cmd += cq_flags
+        if langs:
+            cmd += ["--languages", *langs]
+        if skip_autobuild:
+            cmd += ["--skip-autobuild"]
+        cmd += vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "codeql", "cmd": cmd})
@@ -259,6 +311,35 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "linecount", "cmd": cmd})
+
+    # engagement (stars/forks/watchers/issues to PostgREST if enabled)
+    if "engagement" in scanners:
+        cmd = [sys.executable, str(REPO_ROOT / "scan_engagement.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += vflags
+        if token:
+            cmd += ["--token", token]
+        # Optional persistence controlled by env
+        postgrest_url = os.getenv("POSTGREST_URL") or "http://localhost:3001"
+        persist_flag = os.getenv("PERSIST_ENGAGEMENT")
+        if persist_flag and persist_flag.lower() not in ("0", "false", "no"):  # minimal toggle
+            cmd += ["--persist", "--postgrest-url", postgrest_url]
+        cmds.append({"name": "engagement", "cmd": cmd})
+
+    # shai_hulud (Shai Hulud indicators scan)
+    if "shai_hulud" in scanners:
+        cmd = [sys.executable, str(REPO_ROOT / "scan_shai_hulud.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        cmd += vflags
+        if token:
+            cmd += ["--token", token]
+        cmds.append({"name": "shai_hulud", "cmd": cmd})
 
     return cmds
 
@@ -386,16 +467,35 @@ def run_orchestrator(args: argparse.Namespace) -> int:
                 start = datetime.datetime.now()
 
                 def _run(command: List[str], log_file: Path):
+                    # Stream child output live to both the UI (stdout) and the log file
                     with log_file.open("w", encoding="utf-8") as lf:
                         lf.write(f"# Command\n{' '.join(command)}\n\n")
+                        lf.write("# OUTPUT (stdout+stderr combined)\n\n")
                         lf.flush()
-                        proc = subprocess.run(command, cwd=str(REPO_ROOT), text=True, capture_output=True)
-                        lf.write("# STDOUT\n\n")
-                        lf.write(proc.stdout or "")
-                        if proc.stderr:
-                            lf.write("\n# STDERR\n\n")
-                            lf.write(proc.stderr)
-                        return proc.returncode
+                        # Use Popen to stream combined output
+                        proc = subprocess.Popen(
+                            command,
+                            cwd=str(REPO_ROOT),
+                            text=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            bufsize=1,
+                            universal_newlines=True,
+                        )
+                        try:
+                            assert proc.stdout is not None
+                            for line in proc.stdout:
+                                # Write to file
+                                lf.write(line)
+                                # Echo to container stdout so server SSE picks it up
+                                print(line, end="")
+                            proc.wait()
+                        finally:
+                            try:
+                                proc.stdout and proc.stdout.close()
+                            except Exception:
+                                pass
+                        return int(proc.returncode or 0)
 
                 fut = pool.submit(_run, cmd, log_path)
                 fut_to_name[fut] = name
@@ -445,6 +545,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--include-archived", action="store_true", help="Include archived repositories")
 
     parser.add_argument("--max-workers", type=int, default=6, help="Max workers for CodeQL repo-level concurrency")
+    parser.add_argument("--codeql-query-suite", type=str, help="Override CodeQL query suite (e.g., code-scanning, security-extended, security-and-quality)")
+    parser.add_argument("--codeql-timeout-seconds", type=int, help="Override CodeQL analyze timeout seconds")
+    parser.add_argument("--codeql-languages", type=str, help="Comma-separated CodeQL languages to target (e.g., python,java). Defaults to auto-detect when omitted")
+    parser.add_argument("--codeql-skip-autobuild", action="store_true", help="Skip CodeQL autobuild for compiled languages (useful when build pipelines are absent)")
+    parser.add_argument("--codeql-recreate-db", action="store_true", help="Recreate CodeQL DBs before analysis (avoids cache issues)")
     parser.add_argument("--scanners-parallel", type=int, default=1, help="How many scanners to run in parallel")
     parser.add_argument("--fail-fast", action="store_true", help="Stop on first hard error (exit code not in {0,1})")
 

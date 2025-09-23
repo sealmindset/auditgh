@@ -1,17 +1,40 @@
 import { useEffect, useMemo, useState } from 'react'
 import { xhrGetJson, xhrPostJson } from '../lib/xhr'
 import OssVulnTables from '../components/OssVulnTables'
+import DataTable, { ColumnDef } from '../components/DataTable'
 
-export type ApiProject = { id: number; uuid: string; name: string; repo_url: string | null; description: string | null; is_active: boolean; created_at: string; updated_at?: string; contributors_count?: number; last_commit_at?: string | null; primary_language?: string | null; total_loc?: number }
+export type ApiProject = { id: number; uuid: string; name: string; repo_url: string | null; description: string | null; is_active: boolean; created_at: string; updated_at?: string; contributors_count?: number; last_commit_at?: string | null; primary_language?: string | null; total_loc?: number; stars?: number | null; forks?: number | null }
 
 function ownerRepoFromUrl(url: string | null): string | null {
   if (!url) return null
-  try {
-    const u = new URL(url)
-    const parts = u.pathname.replace(/^\//,'').split('/')
+  const raw = url.trim()
+  // Handle SSH format: git@github.com:owner/repo(.git)
+  const sshMatch = /^git@[^:]+:([^\s]+)$/i.exec(raw)
+  if (sshMatch) {
+    const path = sshMatch[1].replace(/\.git$/i, '')
+    const parts = path.split('/')
     if (parts.length >= 2) return `${parts[0]}/${parts[1]}`
     return null
-  } catch { return null }
+  }
+  // Handle plain owner/repo(.git)
+  const plainMatch = /^([^\s/]+)\/([^\s/]+)(?:\.git)?$/i.exec(raw)
+  if (plainMatch && !raw.includes('://')) {
+    return `${plainMatch[1]}/${plainMatch[2].replace(/\.git$/i, '')}`
+  }
+  // Handle http(s) and git:// URLs
+  try {
+    const u = new URL(raw)
+    const cleaned = u.pathname.replace(/^\//,'').replace(/\.git$/i, '')
+    const parts = cleaned.split('/')
+    if (parts.length >= 2) return `${parts[0]}/${parts[1]}`
+    return null
+  } catch {
+    return null
+  }
+}
+
+function normalizeRepoKey(s: string): string {
+  return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
 }
 
 export default function ProjectDetail({ uuid }: { uuid: string }) {
@@ -32,16 +55,35 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
   const [errorContrib, setErrorContrib] = useState<string | null>(null)
   const [errorCommits, setErrorCommits] = useState<string | null>(null)
   // Contributors pagination/filters
+  // Contributors now paginated client-side via DataTable
   const [contribPage, setContribPage] = useState(1)
   const [contribPageSize, setContribPageSize] = useState(10)
   const [contribSearch, setContribSearch] = useState('')
   const [contribSort, setContribSort] = useState<'commits' | 'recent'>('commits')
   const [contribHasMore, setContribHasMore] = useState(false)
   // Commits pagination/filters
+  // Commits now paginated client-side via DataTable
   const [commitPage, setCommitPage] = useState(1)
-  const [commitPageSize, setCommitPageSize] = useState(20)
+  const [commitPageSize, setCommitPageSize] = useState(10)
   const [commitSearch, setCommitSearch] = useState('')
   const [commitHasMore, setCommitHasMore] = useState(false)
+  // CodeQL findings table state
+  const [cqRepo, setCqRepo] = useState<string>('')
+  const [cqFindings, setCqFindings] = useState<any[]>([])
+  const [cqTotal, setCqTotal] = useState(0)
+  // Findings now paginated client-side via DataTable
+  const [cqPage, setCqPage] = useState(0)
+  const [cqPageSize, setCqPageSize] = useState(10)
+  const [cqSearch, setCqSearch] = useState('')
+  const defaultSeverities = useMemo(() => ["critical","high","medium","low","info","unknown"] as const, [])
+  const [cqSev, setCqSev] = useState<string[]>([...defaultSeverities])
+  const [cqSort, setCqSort] = useState<'severity'|'rule'|'file'|'line'>('severity')
+  const [cqDir, setCqDir] = useState<'asc'|'desc'>('desc')
+  const [cqLoading, setCqLoading] = useState(false)
+  const [cqError, setCqError] = useState<string|null>(null)
+  const [repoOptions, setRepoOptions] = useState<string[]>([])
+  const [loadingRepos, setLoadingRepos] = useState(false)
+  const [cqTotals, setCqTotals] = useState<{ total: number; critical: number; high: number; medium: number; low: number; info: number; unknown: number }>({ total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0 })
 
   // Map language names to Tailwind color classes (kept explicit to avoid purge)
   function langColorClass(language: string): string {
@@ -72,7 +114,7 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
 
   useEffect(() => {
     setLoading(true)
-    xhrGetJson(`${base}/db/projects?select=id,uuid,name,repo_url,description,is_active,contributors_count,last_commit_at,primary_language,total_loc,created_at,updated_at&uuid=eq.${encodeURIComponent(uuid)}`)
+    xhrGetJson(`${base}/db/projects?select=id,uuid,name,repo_url,description,is_active,contributors_count,last_commit_at,primary_language,total_loc,stars,forks,created_at,updated_at&uuid=eq.${encodeURIComponent(uuid)}`)
       .then((rows) => {
         const p = (rows || [])[0] as ApiProject | undefined
         if (p) {
@@ -104,8 +146,8 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
     setLoadingContrib(true)
     setErrorContrib(null)
     const order = contribSort === 'commits' ? 'commits_count.desc' : 'last_commit_at.desc'
-    const limit = contribPageSize
-    const offset = (contribPage - 1) * contribPageSize
+    const limit = 500
+    const offset = 0
     let url = `${base}/db/project_contributors?select=login,display_name,email,commits_count,last_commit_at&project_id=eq.${encodeURIComponent(uuid)}&order=${encodeURIComponent(order)}&limit=${limit}&offset=${offset}`
     if (contribSearch.trim()) {
       const q = contribSearch.trim()
@@ -115,18 +157,18 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
       .then((rows) => {
         const arr = rows || []
         setContributors(arr)
-        setContribHasMore(arr.length >= contribPageSize)
+        setContribHasMore(arr.length >= limit)
       })
       .catch((e: any) => setErrorContrib(e?.message || 'Failed to load contributors'))
       .finally(() => setLoadingContrib(false))
-  }, [base, uuid, contribPage, contribPageSize, contribSearch, contribSort])
+  }, [base, uuid, contribSearch, contribSort])
 
   useEffect(() => {
     if (!uuid) return
     setLoadingCommits(true)
     setErrorCommits(null)
-    const limit = commitPageSize
-    const offset = (commitPage - 1) * commitPageSize
+    const limit = 500
+    const offset = 0
     let url = `${base}/db/project_commits?select=sha,author_login,author_email,committed_at,message,url&project_id=eq.${encodeURIComponent(uuid)}&order=committed_at.desc&limit=${limit}&offset=${offset}`
     if (commitSearch.trim()) {
       const q = commitSearch.trim()
@@ -136,11 +178,11 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
       .then((rows) => {
         const arr = rows || []
         setCommits(arr)
-        setCommitHasMore(arr.length >= commitPageSize)
+        setCommitHasMore(arr.length >= limit)
       })
       .catch((e: any) => setErrorCommits(e?.message || 'Failed to load commits'))
       .finally(() => setLoadingCommits(false))
-  }, [base, uuid, commitPage, commitPageSize, commitSearch])
+  }, [base, uuid, commitSearch])
 
   async function save() {
     if (!item || !form) return
@@ -163,6 +205,89 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
 
   const repo = ownerRepoFromUrl(item?.repo_url || null)
   const repoName = useMemo(() => (repo ? repo.split('/')[1] : null), [repo])
+  useEffect(() => {
+    // Default CodeQL repo input from project repo URL
+    if (repo && !cqRepo) setCqRepo(repo.split('/').pop() as string)
+  }, [repo])
+
+  // Auto-load detected repos on initial load when project is ready
+  useEffect(() => {
+    if (item && item.uuid) {
+      loadRepoOptions()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.uuid])
+
+  async function loadRepoOptions() {
+    if (!item) return
+    setLoadingRepos(true)
+    try {
+      const url = `${base}/api/projects/${encodeURIComponent(item.uuid)}/codeql/repos`
+      const data = await xhrGetJson(url)
+      const rawOpts = ((data?.data || []) as string[]).filter(Boolean)
+      // Prefer repos matching project's repo short name or project name
+      const preferredRepo = (repoName || '').trim()
+      const projectName = (item?.name || '').trim()
+      let opts = rawOpts
+      const prefKey = normalizeRepoKey(preferredRepo)
+      const nameKey = normalizeRepoKey(projectName)
+      if (prefKey) {
+        const filtered = rawOpts.filter(o => normalizeRepoKey(o).includes(prefKey))
+        if (filtered.length) opts = filtered
+      } else if (nameKey) {
+        const filtered = rawOpts.filter(o => normalizeRepoKey(o).includes(nameKey))
+        if (filtered.length) opts = filtered
+      }
+      setRepoOptions(opts)
+      // If no manual repo selected, prefer repo from project repo_url; otherwise try project name; finally pick first
+      if (!cqRepo && opts.length > 0) {
+        const preferredRepo = (repoName || '').trim()
+        const projectName = (item?.name || '').trim()
+        const pick = (() => {
+          // Try exact case-insensitive match to repo from repo_url
+          if (preferredRepo) {
+            const lower = preferredRepo.toLowerCase()
+            const found = opts.find(o => (o || '').toLowerCase() === lower)
+            if (found) return found
+            // Try normalized comparison
+            const normPref = normalizeRepoKey(preferredRepo)
+            const foundNorm = opts.find(o => normalizeRepoKey(o || '') === normPref)
+            if (foundNorm) return foundNorm
+            // Try normalized substring containment (handles dashes/underscores/casing)
+            const foundContains = opts.find(o => normalizeRepoKey(o || '').includes(normPref))
+            if (foundContains) return foundContains
+          }
+          // Try exact case-insensitive match to project name
+          if (projectName) {
+            const lowerName = projectName.toLowerCase()
+            const foundByName = opts.find(o => (o || '').toLowerCase() === lowerName)
+            if (foundByName) return foundByName
+            const normName = normalizeRepoKey(projectName)
+            const foundByNorm = opts.find(o => normalizeRepoKey(o || '') === normName)
+            if (foundByNorm) return foundByNorm
+            const foundByContains = opts.find(o => normalizeRepoKey(o || '').includes(normName))
+            if (foundByContains) return foundByContains
+          }
+          // No match found: prefer keeping a meaningful value over defaulting to unrelated first option
+          if (preferredRepo) return preferredRepo
+          if (projectName) return projectName
+          // Ultimately default to first detected
+          return opts[0]
+        })()
+        setCqRepo(pick)
+        // Fire and forget; no need to await here
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        loadCqFindingsForRepo(pick, 0)
+        // Also load severity totals for this repo
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
+        loadCqTotals(pick)
+      }
+    } catch (e) {
+      // ignore for now; keep manual input available
+    } finally {
+      setLoadingRepos(false)
+    }
+  }
   const scanHref = useMemo(() => {
     if (!item) return '#'
     const u = new URL('http://localhost:5173/')
@@ -170,6 +295,95 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
     if (repo) u.searchParams.set('repo', repo)
     return u.toString()
   }, [item, repo])
+
+  async function loadCqFindings(page = cqPage) {
+    if (!item) return
+    if (!cqRepo && !repoName) { setCqError('Repo name is required'); return }
+    setCqError(null)
+    setCqLoading(true)
+    try {
+      const params = new URLSearchParams()
+      // Prefer user-entered short name; fallback to detected repo short name
+      const shortRepo = (cqRepo || repoName || '').trim()
+      if (shortRepo) params.set('repo', shortRepo)
+      if (cqSearch) params.set('search', cqSearch)
+      if (cqSev.length) params.set('severity', cqSev.join(','))
+      // Fetch up to 200 findings and page client-side via DataTable
+      params.set('limit', String(200))
+      params.set('offset', String(0))
+      // Server-side sort not required when using DataTable
+      const url = `${base}/api/projects/${encodeURIComponent(item.uuid)}/codeql/findings?${params.toString()}`
+      const data = await xhrGetJson(url)
+      setCqFindings(data?.data?.items || [])
+      setCqTotal(Number(data?.data?.total || 0))
+      setCqPage(page)
+    } catch (e: any) {
+      setCqError(e?.message || 'Failed to load CodeQL findings')
+    } finally {
+      setCqLoading(false)
+    }
+  }
+
+  async function loadCqFindingsForRepo(shortRepo: string, page = 0) {
+    if (!item) return
+    const repoSel = (shortRepo || '').trim()
+    if (!repoSel) { setCqError('Repo name is required'); return }
+    setCqError(null)
+    setCqLoading(true)
+    try {
+      const params = new URLSearchParams()
+      params.set('repo', repoSel)
+      if (cqSearch) params.set('search', cqSearch)
+      if (cqSev.length) params.set('severity', cqSev.join(','))
+      // Fetch up to 200 findings and page client-side via DataTable
+      params.set('limit', String(200))
+      params.set('offset', String(0))
+      const url = `${base}/api/projects/${encodeURIComponent(item.uuid)}/codeql/findings?${params.toString()}`
+      const data = await xhrGetJson(url)
+      setCqFindings(data?.data?.items || [])
+      setCqTotal(Number(data?.data?.total || 0))
+      setCqPage(page)
+    } catch (e: any) {
+      setCqError(e?.message || 'Failed to load CodeQL findings')
+    } finally {
+      setCqLoading(false)
+    }
+  }
+
+  // Load severity totals for the selected or inferred repo
+  async function loadCqTotals(selectedRepo?: string) {
+    if (!item) return
+    const repoSel = (selectedRepo || cqRepo || repoName || '').trim()
+    if (!repoSel) return
+    try {
+      const url = `${base}/api/projects/${encodeURIComponent(item.uuid)}/codeql/severity-totals?repo=${encodeURIComponent(repoSel)}`
+      const data = await xhrGetJson(url)
+      const d = (data?.data || {}) as any
+      setCqTotals({
+        total: Number(d.total || 0),
+        critical: Number(d.critical || 0),
+        high: Number(d.high || 0),
+        medium: Number(d.medium || 0),
+        low: Number(d.low || 0),
+        info: Number(d.info || 0),
+        unknown: Number(d.unknown || 0),
+      })
+    } catch {
+      setCqTotals({ total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0 })
+    }
+  }
+
+  // Auto-load findings and totals when project/repo is available or filters change
+  useEffect(() => {
+    if (!item) return
+    const repoSel = (cqRepo || repoName || '').trim()
+    if (!repoSel) return
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    loadCqFindings(0)
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    loadCqTotals()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.uuid, cqRepo, repoName, cqSev, cqSort, cqDir, cqPageSize])
 
   if (loading) return <div className="p-4">Loading…</div>
   if (error) return (
@@ -225,16 +439,99 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
                 {typeof item?.total_loc === 'number' ? item.total_loc.toLocaleString() : '—'}
               </div>
             </div>
-            {(typeof item?.contributors_count !== 'undefined' || item?.last_commit_at) ? (
+            {(typeof item?.contributors_count !== 'undefined' || item?.last_commit_at || typeof item?.stars === 'number' || typeof item?.forks === 'number') ? (
               <div className="text-sm text-slate-600 md:col-span-2">
                 <span className="mr-4">Contributors: <strong>{item?.contributors_count ?? 0}</strong></span>
                 {item?.last_commit_at ? <span>Last commit: <strong>{new Date(item.last_commit_at).toLocaleString()}</strong></span> : null}
+                {(typeof item?.stars === 'number' || typeof item?.forks === 'number') ? (
+                  <span className="ml-4">Stars/Forks: <strong>{typeof item?.stars === 'number' ? item.stars.toLocaleString() : '—'}</strong> / <strong>{typeof item?.forks === 'number' ? item.forks.toLocaleString() : '—'}</strong></span>
+                ) : null}
               </div>
             ) : null}
           </div>
         </div>
 
         <OssVulnTables repoName={repoName} />
+
+        <div className="bg-white p-4 rounded shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-medium">CodeQL Findings</h2>
+            <div className="text-xs text-slate-600">Latest successful scan</div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3 text-sm">
+            <label className="flex flex-col">
+              <span className="text-xs text-slate-600">Repo (short name)</span>
+              <input className="border rounded px-2 py-1" value={cqRepo} onChange={e => setCqRepo(e.target.value)} placeholder={repoName || 'e.g. oscp'} />
+            </label>
+            {(repoOptions.length > 1) && (
+              <label className="flex flex-col">
+                <span className="text-xs text-slate-600">Detected repos</span>
+                <div className="flex items-center gap-2">
+                  <select className="border rounded px-2 py-1 min-w-[12rem]" value={(() => { const lc = (cqRepo||'').toLowerCase(); const match = repoOptions.find(r => (r||'').toLowerCase()===lc); return match || ''; })()} onChange={e => setCqRepo(e.target.value)}>
+                    <option value="">{loadingRepos ? 'Loading…' : 'Select a repo'}</option>
+                    {repoOptions.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                  <button className="px-2 py-1 bg-slate-200 rounded" onClick={loadRepoOptions} disabled={loadingRepos}>Refresh</button>
+                </div>
+              </label>
+            )}
+            <div className="flex items-end gap-2">
+              <button className="px-3 py-1 bg-slate-200 rounded" onClick={() => loadCqFindings(0)} disabled={cqLoading}>Refresh</button>
+              <button className="px-3 py-1 bg-slate-100 rounded" onClick={() => { setCqSearch(''); setCqSev([...defaultSeverities]); setCqSort('severity'); setCqDir('desc'); setCqPage(0); setCqFindings([]); setCqTotal(0); }}>Reset</button>
+            </div>
+          </div>
+          {/* Severity totals with click-to-filter */}
+          <div className="text-xs mb-2 flex flex-wrap items-center gap-2">
+            <span className="mr-1">Totals:</span>
+            <button className={`px-2 py-0.5 rounded border ${cqSev.length===defaultSeverities.length ? 'bg-slate-800 text-white' : 'bg-slate-100'}`} onClick={() => { setCqSev([...defaultSeverities]); setCqPage(0) }}>All {cqTotals.total}</button>
+            <button className="px-2 py-0.5 rounded text-white bg-red-600" onClick={() => { setCqSev(['critical']); setCqPage(0) }}>Critical {cqTotals.critical}</button>
+            <button className="px-2 py-0.5 rounded text-white bg-red-500" onClick={() => { setCqSev(['high']); setCqPage(0) }}>High {cqTotals.high}</button>
+            <button className="px-2 py-0.5 rounded bg-amber-400" onClick={() => { setCqSev(['medium']); setCqPage(0) }}>Medium {cqTotals.medium}</button>
+            <button className="px-2 py-0.5 rounded bg-yellow-200" onClick={() => { setCqSev(['low']); setCqPage(0) }}>Low {cqTotals.low}</button>
+            <button className="px-2 py-0.5 rounded bg-blue-200" onClick={() => { setCqSev(['info']); setCqPage(0) }}>Info {cqTotals.info}</button>
+            <button className="px-2 py-0.5 rounded bg-slate-200" onClick={() => { setCqSev(['unknown']); setCqPage(0) }}>Unknown {cqTotals.unknown}</button>
+          </div>
+          <div className="text-xs mb-2">
+            <span className="mr-2">Severity:</span>
+            {["critical","high","medium","low","info","unknown"].map(s => (
+              <label key={s} className="mr-3 inline-flex items-center gap-1">
+                <input type="checkbox" checked={cqSev.includes(s)} onChange={(e) => setCqSev(prev => e.target.checked ? Array.from(new Set([...prev, s])) : prev.filter(x => x!==s))} />
+                <span className="capitalize">{s}</span>
+              </label>
+            ))}
+          </div>
+          {cqError && <div className="text-red-600 text-sm mb-2">{cqError}</div>}
+          {(() => {
+            const columns: ColumnDef<any>[] = [
+              {
+                key: 'severity',
+                header: 'Severity',
+                sortable: true,
+                render: (it) => (
+                  <span className={`text-xs px-2 py-0.5 rounded ${
+                    (it.severity||'').toLowerCase()==='critical' ? 'bg-red-600 text-white' :
+                    (it.severity||'').toLowerCase()==='high' ? 'bg-red-500 text-white' :
+                    (it.severity||'').toLowerCase()==='medium' ? 'bg-amber-400 text-black' :
+                    (it.severity||'').toLowerCase()==='low' ? 'bg-yellow-200 text-black' :
+                    (it.severity||'').toLowerCase()==='info' ? 'bg-blue-200 text-black' : 'bg-slate-200 text-black'}`}>{(it.severity||'unknown').toUpperCase()}</span>
+                )
+              },
+              { key: 'rule_id', header: 'Rule', sortable: true },
+              { key: 'file', header: 'File', sortable: true },
+              { key: 'line', header: 'Line', sortable: true },
+              { key: 'message', header: 'Message', sortable: false, render: (it) => (<span title={it.message || ''}>{it.message || ''}</span>) },
+              { key: 'help_uri', header: 'Docs', sortable: false, render: (it) => (it.help_uri ? <a className="text-blue-600 underline" href={it.help_uri} target="_blank" rel="noreferrer">Docs</a> : <span className="text-slate-400">—</span>) },
+            ]
+            return (
+              <DataTable
+                data={cqFindings}
+                columns={columns}
+                defaultPageSize={10}
+                filterKeys={['severity','rule_id','file','message']}
+              />
+            )
+          })()}
+        </div>
 
         <div className="bg-white p-4 rounded shadow-sm">
           <h2 className="font-medium mb-2">Languages Breakdown</h2>
@@ -306,58 +603,42 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
         <div className="bg-white p-4 rounded shadow-sm">
           <h2 className="font-medium mb-2">Contributors</h2>
           <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
-            <input className="border rounded px-2 py-1" placeholder="Filter by login…" value={contribSearch} onChange={(e) => { setContribPage(1); setContribSearch(e.target.value); }} />
-            <select className="border rounded px-2 py-1" value={contribSort} onChange={(e) => { setContribPage(1); setContribSort((e.target.value as 'commits'|'recent')); }}>
-              <option value="commits">Sort: Most commits</option>
-              <option value="recent">Sort: Most recent</option>
-            </select>
-            <select className="border rounded px-2 py-1" value={contribPageSize} onChange={(e) => { setContribPage(1); setContribPageSize(parseInt(e.target.value || '10', 10)); }}>
-              <option value={5}>5</option>
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-            </select>
-            <div className="ml-auto flex items-center gap-2">
-              <button className="border rounded px-2 py-1 disabled:opacity-50" onClick={() => setContribPage((p) => Math.max(1, p - 1))} disabled={contribPage <= 1}>Prev</button>
-              <div>Page {contribPage}</div>
-              <button className="border rounded px-2 py-1 disabled:opacity-50" onClick={() => setContribPage((p) => p + 1)} disabled={!contribHasMore}>Next</button>
-            </div>
+            <label className="flex items-center gap-2">
+              <span>Sort:</span>
+              <select className="border rounded px-2 py-1" value={contribSort} onChange={(e) => { setContribSort((e.target.value as 'commits'|'recent')); }}>
+                <option value="commits">Most commits</option>
+                <option value="recent">Most recent</option>
+              </select>
+            </label>
           </div>
           {loadingContrib ? (
             <div className="text-sm text-slate-600">Loading…</div>
           ) : errorContrib ? (
             <div className="text-sm text-red-700">{errorContrib}</div>
-          ) : contributors.length === 0 ? (
-            <div className="text-sm text-slate-600">No contributors found.</div>
           ) : (
-            <ul className="divide-y">
-              {contributors.map((c: { login: string; display_name?: string | null; email?: string | null; commits_count?: number; last_commit_at?: string | null }, idx: number) => (
-                <li key={idx} className="py-2 text-sm flex items-center justify-between">
-                  <div>
-                    <div className="font-medium">{c.display_name || c.login}<span className="text-slate-500">{c.display_name ? ` (@${c.login})` : ''}</span></div>
-                    <div className="text-slate-500">{c.email || ''} {c.last_commit_at ? `• Last: ${new Date(c.last_commit_at).toLocaleString()}` : ''}</div>
-                  </div>
-                  <div className="text-right"><span className="text-slate-500">Commits</span> <span className="font-semibold">{c.commits_count ?? 0}</span></div>
-                </li>
-              ))}
-            </ul>
+            (() => {
+              const columns: ColumnDef<any>[] = [
+                { key: 'login', header: 'Login', sortable: true, render: (c) => (
+                  <span className="font-medium">{c.display_name || c.login}<span className="text-slate-500">{c.display_name ? ` (@${c.login})` : ''}</span></span>
+                ) },
+                { key: 'email', header: 'Email', sortable: true },
+                { key: 'last_commit_at', header: 'Last Commit', sortable: true, render: (c) => c.last_commit_at ? new Date(c.last_commit_at).toLocaleString() : '—' },
+                { key: 'commits_count', header: 'Commits', sortable: true, render: (c) => <span className="font-semibold">{c.commits_count ?? 0}</span> },
+              ]
+              return (
+                <DataTable
+                  data={contributors}
+                  columns={columns}
+                  defaultPageSize={10}
+                  filterKeys={['login','display_name','email']}
+                />
+              )
+            })()
           )}
         </div>
 
         <div className="bg-white p-4 rounded shadow-sm">
           <h2 className="font-medium mb-2">Commit History</h2>
-          <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
-            <input className="border rounded px-2 py-1" placeholder="Filter by message…" value={commitSearch} onChange={(e) => { setCommitPage(1); setCommitSearch(e.target.value); }} />
-            <select className="border rounded px-2 py-1" value={commitPageSize} onChange={(e) => { setCommitPage(1); setCommitPageSize(parseInt(e.target.value || '20', 10)); }}>
-              <option value={10}>10</option>
-              <option value={20}>20</option>
-              <option value={50}>50</option>
-            </select>
-            <div className="ml-auto flex items-center gap-2">
-              <button className="border rounded px-2 py-1 disabled:opacity-50" onClick={() => setCommitPage((p) => Math.max(1, p - 1))} disabled={commitPage <= 1}>Prev</button>
-              <div>Page {commitPage}</div>
-              <button className="border rounded px-2 py-1 disabled:opacity-50" onClick={() => setCommitPage((p) => p + 1)} disabled={!commitHasMore}>Next</button>
-            </div>
-          </div>
           {loadingCommits ? (
             <div className="text-sm text-slate-600">Loading…</div>
           ) : errorCommits ? (
@@ -365,17 +646,24 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
           ) : commits.length === 0 ? (
             <div className="text-sm text-slate-600">No commits found.</div>
           ) : (
-            <ul className="divide-y">
-              {commits.map((c: { sha: string; author_login?: string | null; author_email?: string | null; committed_at: string; message?: string | null; url?: string | null }, idx: number) => (
-                <li key={idx} className="py-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <div className="font-medium truncate max-w-[70%]">{c.message || '(no message)'}</div>
-                    <div className="text-slate-500 ml-3 whitespace-nowrap">{new Date(c.committed_at).toLocaleString()}</div>
-                  </div>
-                  <div className="text-slate-500">{c.author_login ? `@${c.author_login}` : (c.author_email || '')} • <a className="text-blue-600 hover:underline" href={c.url || '#'} target="_blank" rel="noreferrer">{c.sha?.slice(0,7)}</a></div>
-                </li>
-              ))}
-            </ul>
+            (() => {
+              const columns: ColumnDef<any>[] = [
+                { key: 'message', header: 'Message', sortable: true, render: (c) => <span className="truncate inline-block max-w-[40rem]" title={c.message || ''}>{c.message || '(no message)'}</span> },
+                { key: 'committed_at', header: 'Committed At', sortable: true, render: (c) => new Date(c.committed_at).toLocaleString() },
+                { key: 'author_login', header: 'Author', sortable: true },
+                { key: 'author_email', header: 'Email', sortable: true },
+                { key: 'sha', header: 'SHA', sortable: true, render: (c) => c.sha?.substring(0,7) || '' },
+                { key: 'url', header: 'Link', sortable: false, render: (c) => c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View</a> : <span className="text-slate-400">No link</span> },
+              ]
+              return (
+                <DataTable
+                  data={commits}
+                  columns={columns}
+                  defaultPageSize={10}
+                  filterKeys={['message','author_login','author_email','sha']}
+                />
+              )
+            })()
           )}
         </div>
       </main>

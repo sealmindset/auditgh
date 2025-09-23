@@ -712,6 +712,13 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Scan contributors per repository and enrich profile info")
     p.add_argument("--org", type=str, default=default_org, help=f"GitHub organization or user (default: {default_org})")
     p.add_argument("--repo", type=str, help="Single repository to scan (name or owner/name)")
+    # Concurrency control
+    try:
+        default_max_workers = int(os.getenv("CONTRIB_MAX_WORKERS") or os.getenv("SCAN_MAX_WORKERS") or 5)
+    except Exception:
+        default_max_workers = 5
+    p.add_argument("--max-workers", type=int, default=default_max_workers,
+                   help=f"Max worker threads (default: {default_max_workers}; env CONTRIB_MAX_WORKERS or SCAN_MAX_WORKERS)")
     p.add_argument("--api-base", type=str, default=default_api, help=f"GitHub API base (default: {default_api})")
     p.add_argument("--token", type=str, default=default_token, help="GitHub token (or set GITHUB_TOKEN)")
     p.add_argument("--output-dir", type=str, default=default_out, help=f"Output directory (default: {default_out})")
@@ -978,7 +985,7 @@ def main() -> int:
         if args.init_only:
             logging.info("Init-only mode: completed PostgREST upserts; exiting without scanning.")
             return 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.max_workers) as executor:
         futures = [
             executor.submit(
                 process_repo, session, args.api_base, r, output_dir,
