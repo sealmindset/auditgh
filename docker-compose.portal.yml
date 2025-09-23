@@ -77,7 +77,11 @@ services:
   # Periodic seeder: discovers repos and upserts projects via PostgREST, then sleeps
   seeder:
     platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: auditgh-scanner:latest
+    pull_policy: never
     depends_on:
       db:
         condition: service_healthy
@@ -87,6 +91,44 @@ services:
     environment:
       SEED_INTERVAL: "3600"
     entrypoint: ["sh", "-lc", "while true; do python scan_contributor.py --org \"${GITHUB_ORG}\" --token \"${GITHUB_TOKEN}\" --init-projects-to-postgrest --postgrest-url http://postgrest:3000 --include-archived --include-forks --persist-contributors --persist-commits --max-recent-commits 100 --init-only -v || true; sleep ${SEED_INTERVAL:-3600}; done"]
+    profiles: ["seed"]
+
+  # Periodic languages/LOC refresher: runs linecount (persist LOC/files) then OSS (persist bytes) on an interval
+  seeder_langloc:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: auditgh-scanner:latest
+    pull_policy: never
+    depends_on:
+      db:
+        condition: service_healthy
+      postgrest:
+        condition: service_started
+    env_file: .env
+    entrypoint: ["sh", "-lc", "while true; do \
+      python scan_linecount.py \
+        --org \"${GITHUB_ORG}\" \
+        --token \"${GITHUB_TOKEN}\" \
+        --include-archived --include-forks \
+        --persist-loc \
+        --postgrest-url http://postgrest:3000 \
+        --max-workers ${LINECOUNT_MAX_WORKERS:-3} \
+        --use-cloc -v || true; \
+      python scan_oss.py \
+        --org \"${GITHUB_ORG}\" \
+        --token \"${GITHUB_TOKEN}\" \
+        --use-graphql \
+        --include-archived --include-forks \
+        --persist-languages \
+        --enable-syft \
+        --syft-format ${SYFT_FORMAT:-cyclonedx-json} \
+        --enable-grype \
+        --grype-scan-mode ${GRYPE_SCAN_MODE:-sbom} \
+        --postgrest-url http://postgrest:3000 \
+        --max-workers ${OSS_MAX_WORKERS:-3} -v || true; \
+      sleep ${SEED_LANGLOC_INTERVAL:-86400}; done"]
     profiles: ["seed"]
 
 volumes:
