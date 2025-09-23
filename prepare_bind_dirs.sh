@@ -34,5 +34,6 @@ create_dir "$REPO_ROOT/binaries_reports"
 create_dir "$REPO_ROOT/linecount_reports"
 create_dir "$REPO_ROOT/markdown"
 create_dir "$REPO_ROOT/logs"
+create_dir "$REPO_ROOT/runs"
 
 msg "All bind directories are ready."

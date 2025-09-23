@@ -252,8 +252,9 @@ main() {
   wait_for_postgrest
 
   seed_projects
-  seed_languages
+  # Seed LOC/files first so project_languages gets created; then OSS adds bytes
   seed_loc
+  seed_languages
   seed_engagement
 
   # Print non-fatal verification summary

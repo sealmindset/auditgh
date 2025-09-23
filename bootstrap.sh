@@ -85,7 +85,9 @@ EOF
     hardcoded_ips_reports \
     contributors_reports \
     linecount_reports \
-    logs
+    markdown \
+    logs \
+    runs
 
   info "Bringing up portal stack: ${COMPOSE} up -d --remove-orphans"
   ${COMPOSE} up -d --remove-orphans

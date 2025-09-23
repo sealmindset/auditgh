@@ -1,6 +1,24 @@
 # AuditGH: GitHub Repository Security Scanner
 
+Jump to: [Quick Start (Portal)](#quick-start-portal)
+
 A modular and extensible security scanning tool that checks GitHub repositories for security vulnerabilities across multiple programming languages.
+
+## Table of Contents
+
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Quick Start (Portal)](#quick-start-portal)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Orchestrator (multi-scanner)](#orchestrator-multi-scanner)
+  - [Deep CodeQL in controlled waves](#deep-codeql-in-controlled-waves-recommended-for-org-wide)
+  - [Binaries/Executables Scanner](#binariesexecutables-scanner)
+  - [Linecount (SAST-Relevant LOC) Scanner](#linecount-sast-relevant-loc-scanner)
+  - [Local Usage](#local-usage)
+- [Output](#output)
+- [Development](#development)
+- [License](#license)
 
 ## Features
 
@@ -24,6 +42,74 @@ A modular and extensible security scanning tool that checks GitHub repositories 
 - Git
 - pip (Python package manager)
 - (Optional) Virtual environment (recommended)
+
+## Quick Start (Portal)
+
+### Prerequisites
+
+- Docker Desktop with Docker Compose v2 (use `docker compose`, not `docker-compose`)
+- GitHub Personal Access Token with `repo` and `read:org`
+- macOS/Linux recommended (Windows WSL2 supported)
+
+### One-time setup
+
+```bash
+# 1) Create .env and spin up the stack
+./bootstrap.sh
+
+# 2) Fill in .env with at least:
+#    GITHUB_ORG=your-org
+#    GITHUB_TOKEN=ghp_xxx
+# Optional OSS scanner defaults:
+#    SYFT_FORMAT=cyclonedx-json
+#    GRYPE_SCAN_MODE=both
+
+# 3) Prepare local bind directories (safe to re-run)
+./prepare_bind_dirs.sh
+
+# 4) Build the scanner image used by server/seeder (linux/amd64 required for CodeQL CLI)
+docker compose -p portal -f docker-compose.portal.yml build scanner
+```
+
+### Dev-only full reset + seed (destroys DB volume)
+
+```bash
+./setup.sh
+```
+
+### What setup.sh does
+
+- Seeds projects (contributors/commits) into PostgREST.
+- Seeds languages (LOC/files) with `linecount` first; then adds bytes via `OSS`.
+- Generates SBOM with Syft and runs Grype (SBOM + filesystem) if enabled.
+- Parses OSV CVSS vectors when available for better severity ranking.
+- Seeds engagement snapshots (stars, forks, watchers, open issues).
+- Prints a non-fatal PostgREST verification summary at the end.
+
+### Environment knobs (optional)
+
+- CodeQL resources (used by UI-triggered scans):
+  - `CODEQL_RAM_MIB=8192`
+  - `CODEQL_THREADS=1`
+- OSS scanner defaults:
+  - `SYFT_FORMAT=cyclonedx-json`
+  - `GRYPE_SCAN_MODE=both`
+- Seeding concurrency (tune cautiously):
+  - `OSS_MAX_WORKERS=3`
+  - `LINECOUNT_MAX_WORKERS=3`
+  - `ENGAGEMENT_MAX_WORKERS=3`
+
+### Troubleshooting
+
+- Docker Compose v2
+  - Ensure v2 is available: `docker compose version`
+- Scanner image architecture (CodeQL CLI)
+  - Build for linux/amd64: `docker buildx build --platform linux/amd64 -t auditgh-scanner:latest .`
+- PostgREST not ready
+  - Wait up to 60s, then check logs: `docker compose -p portal -f docker-compose.portal.yml logs -f postgrest`
+- GitHub API rate limiting
+  - Lower workers in `.env` (`OSS_MAX_WORKERS`, `LINECOUNT_MAX_WORKERS`)
+  - Keep `GITHUB_TARGET_UTILIZATION=0.5` (default) unless you really need faster
 
 ## Installation
 
