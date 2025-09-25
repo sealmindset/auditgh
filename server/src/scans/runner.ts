@@ -9,6 +9,8 @@ import { createScanArtifact } from '../db/repositories/scan_artifacts.js';
 import { createFinding } from '../db/repositories/findings.js';
 import { ingestCodeqlFindings } from '../services/codeql_ingest.js';
 import { ingestOssFindings } from '../services/oss_ingest.js';
+import { ingestSecretLeaks } from '../services/secret_leak_ingest.js';
+import { ingestTerraformFindings } from '../services/terraform_ingest.js';
 
 export type ScanProgressEvent = {
   type: 'log' | 'status' | 'done' | 'error';
@@ -101,6 +103,16 @@ class InMemoryScanRunner {
     const doneTimer = setTimeout(async () => {
       try {
         await updateScanStatus(scanId, 'success', { finished_at: new Date() });
+        try {
+          await ingestSecretLeaks(scan);
+        } catch (e) {
+          logger.warn({ e, scanId }, 'Secret leak ingestion failed');
+        }
+        try {
+          await ingestTerraformFindings(scan);
+        } catch (e) {
+          logger.warn({ e, scanId }, 'Terraform ingestion failed');
+        }
         this.appendLog(scanId, 'Scan completed successfully');
         this.broadcast(scanId, { type: 'done', message: 'success', timestamp: new Date().toISOString() });
         logger.info({ scanId }, 'Scan finished');
@@ -245,6 +257,11 @@ class InMemoryScanRunner {
           await ingestOssFindings(scan);
         } catch (e) {
           logger.warn({ e, scanId }, 'OSS ingestion failed');
+        }
+        try {
+          await ingestTerraformFindings(scan);
+        } catch (e) {
+          logger.warn({ e, scanId }, 'Terraform ingestion failed');
         }
         this.appendLog(scanId, 'Scan completed successfully');
         this.broadcast(scanId, { type: 'done', message: 'success', timestamp: new Date().toISOString() });

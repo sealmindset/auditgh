@@ -266,7 +266,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="flex items-center justify-between p-4 border-b bg-white sticky top-0">
-        <h1 className="font-semibold">Security Portal</h1>
+        <h1 className="font-semibold">GitHub Auditor</h1>
         <AuthBadge />
       </header>
       <main className="p-4 space-y-4">

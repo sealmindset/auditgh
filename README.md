@@ -15,7 +15,7 @@ A modular and extensible security scanning tool that checks GitHub repositories 
   - [Deep CodeQL in controlled waves](#deep-codeql-in-controlled-waves-recommended-for-org-wide)
   - [Binaries/Executables Scanner](#binariesexecutables-scanner)
   - [Linecount (SAST-Relevant LOC) Scanner](#linecount-sast-relevant-loc-scanner)
-  - [Local Usage](#local-usage)
+- [Secret Leak Ingestion](#secret-leak-ingestion)
 - [Output](#output)
 - [Development](#development)
 - [License](#license)
@@ -30,7 +30,7 @@ A modular and extensible security scanning tool that checks GitHub repositories 
   - Dependency vulnerability scanning
   - Static code analysis
   - License compliance checking (planned)
-  - Secrets detection (planned)
+  - Secrets detection (GenAI tokens, Gitleaks, TruffleHog) with PostgREST persistence
 - **Parallel Processing**: Fast scanning of multiple repositories
 - **Detailed Reporting**: Multiple report formats (Markdown, HTML, JSON, Console)
 - **Extensible**: Easy to add support for new security tools and languages
@@ -189,6 +189,15 @@ pip install git+https://github.com/your-username/auditgh.git
      --profile deep \
      --include-forks --include-archived \
      --scanners-parallel 2 -vv
+   ```
+
+4. Persist secrets with Gitleaks/TruffleHog:
+   ```bash
+   docker compose run --rm auditgh \
+     --org your-org-name \
+     --profile balanced \
+     --only gitleaks,trufflehog \
+     --postgrest-url http://postgrest:3000 --persist
    ```
 
 4. View reports:

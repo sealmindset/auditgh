@@ -77,39 +77,42 @@ export default function OssVulnTables({ repoName }: { repoName: string | null })
   }, [vulnRows])
 
   const columnsSummary: ColumnDef<any>[] = [
-    { key: 'package', header: 'Package' },
-    { key: 'version', header: 'Version' },
+    { key: 'package', header: 'Package', filter: { type: 'text', getValue: (r) => String(r.package || '') } },
+    { key: 'version', header: 'Version', filter: { type: 'text', getValue: (r) => String(r.version || '') } },
     { key: 'count', header: 'Count' },
     {
       key: 'max_severity',
       header: 'Max Severity',
+      filter: { type: 'enum', enumValues: ['Critical','High','Medium','Low','Unknown'], getValue: (r) => normSeverity(r.max_severity) },
       render: (row) => <SeverityBadge severity={row.max_severity} />,
     },
-    { key: 'description', header: 'Description', sortable: false },
-    { key: 'fixed_version', header: 'Fixed Version' },
-    { key: 'mitigation', header: 'Mitigation', sortable: false },
+    { key: 'description', header: 'Description', sortable: false, filter: { type: 'text', getValue: (r) => String(r.description || '') } },
+    { key: 'fixed_version', header: 'Fixed Version', filter: { type: 'text', getValue: (r) => String(r.fixed_version || '') } },
+    { key: 'mitigation', header: 'Mitigation', sortable: false, filter: { type: 'text', getValue: (r) => String(r.mitigation || '') } },
   ]
 
   const columnsMultiple: ColumnDef<any>[] = [
-    { key: 'package', header: 'Package' },
-    { key: 'version', header: 'Version' },
+    { key: 'package', header: 'Package', filter: { type: 'text', getValue: (r) => String(r.package || '') } },
+    { key: 'version', header: 'Version', filter: { type: 'text', getValue: (r) => String(r.version || '') } },
     { key: 'count', header: 'Count' },
     {
       key: 'max_severity',
       header: 'Max Severity',
+      filter: { type: 'enum', enumValues: ['Critical','High','Medium','Low','Unknown'], getValue: (r) => normSeverity(r.max_severity) },
       render: (row) => <SeverityBadge severity={row.max_severity} />,
     },
-    { key: 'description', header: 'Description', sortable: false },
-    { key: 'fixed_version', header: 'Fixed Version' },
-    { key: 'mitigation', header: 'Mitigation', sortable: false },
+    { key: 'description', header: 'Description', sortable: false, filter: { type: 'text', getValue: (r) => String(r.description || '') } },
+    { key: 'fixed_version', header: 'Fixed Version', filter: { type: 'text', getValue: (r) => String(r.fixed_version || '') } },
+    { key: 'mitigation', header: 'Mitigation', sortable: false, filter: { type: 'text', getValue: (r) => String(r.mitigation || '') } },
   ]
 
   const columnsVulns: ColumnDef<any>[] = [
-    { key: 'package', header: 'Package' },
-    { key: 'version', header: 'Version' },
+    { key: 'package', header: 'Package', filter: { type: 'text', getValue: (r) => String(r.package || '') } },
+    { key: 'version', header: 'Version', filter: { type: 'text', getValue: (r) => String(r.version || '') } },
     {
       key: 'vuln_id',
       header: 'Vulnerability ID',
+      filter: { type: 'text', getValue: (r) => String(r.vuln_id || '') },
       render: (row) => {
         const id: string = row.vuln_id || ''
         const href = linkForVulnId(id)
@@ -118,11 +121,11 @@ export default function OssVulnTables({ repoName }: { repoName: string | null })
         ) : (id || '—')
       },
     },
-    { key: 'severity', header: 'Severity', render: (row) => <SeverityBadge severity={row.severity} /> },
+    { key: 'severity', header: 'Severity', filter: { type: 'enum', enumValues: ['Critical','High','Medium','Low','Unknown'], getValue: (r) => normSeverity(r.severity) }, render: (row) => <SeverityBadge severity={row.severity} /> },
     { key: 'epss', header: 'EPSS Score' },
-    { key: 'description', header: 'Description', sortable: false },
-    { key: 'fixed_version', header: 'Fixed Version' },
-    { key: 'mitigation', header: 'Mitigation', sortable: false },
+    { key: 'description', header: 'Description', sortable: false, filter: { type: 'text', getValue: (r) => String(r.description || '') } },
+    { key: 'fixed_version', header: 'Fixed Version', filter: { type: 'text', getValue: (r) => String(r.fixed_version || '') } },
+    { key: 'mitigation', header: 'Mitigation', sortable: false, filter: { type: 'text', getValue: (r) => String(r.mitigation || '') } },
   ]
 
   return (

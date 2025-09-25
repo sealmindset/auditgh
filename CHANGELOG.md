@@ -1,3 +1,10 @@
+  - Project Detail: CI/CD section showing recent GitHub Actions workflow runs for the repository
+    - UI: `web/src/pages/ProjectDetail.tsx` renders a DataTable with filters (Workflow/Event/Status/Conclusion/Branch/Actor/Commit).
+    - Server: `server/src/api/routes/ci.ts` proxies GitHub API `actions/runs` with a lean normalized payload and auth via env token.
+    - Env: set `GITHUB_TOKEN` (or `GH_TOKEN`) in server environment for authenticated API access.
+- Top navigation: removed AI Tokens link and label.
+- Project Detail → Published Secrets: removed ad-hoc filter row; replaced with header filter menus for a simpler, Excel-like UX.
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -8,6 +15,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Web app scaffolding and DX improvements:
+  - `web/vite.config.ts` with React plugin and dev server bind to `0.0.0.0:3000`.
+  - `docker-compose.dev.yml` for hot-reload dev stack (`web`, `server`, `db`, `postgrest`).
+  - Husky pre-commit hook `.husky/pre-commit` to run `web` typecheck and build.
+  - `web/src/pages/AITokens.tsx` and top-nav link to surface AI tokens across orgs.
+
+- GenAI tokens detection and persistence:
+  - DB migration `db/portal_init/014_ai_tokens.sql`:
+    - Tables: `public.ai_tokens`, `public.ai_tokens_validations` (RLS enabled).
+    - Views: `api.ai_tokens` (includes token), `api.ai_tokens_admin`.
+    - RPCs: `api.upsert_ai_tokens(p_project_id int, p_payload jsonb)`, `api.record_ai_token_validation(...)`.
+  - Server:
+    - Route: `server/src/api/routes/ai_tokens.ts` as PostgREST proxy (`/api/ai-tokens`).
+    - Services: `genai_ingest.ts` to upsert tokens from artifacts; `genai_validate.ts` to validate (OpenAI, Anthropic, Cohere).
+  - Scanner + Orchestrator:
+    - New `scan_genai_tokens.py` (providers: openai/anthropic/cohere initial).
+    - `orchestrate_scans.py` now supports `genai_tokens` step (persists via PostgREST).
+  - UI:
+    - Project page (`web/src/pages/ProjectDetail.tsx`) now shows a "Published Secrets / Tokens" section filtered to the current project.
+    - Org-level page `AITokens` lists tokens with filters (provider/validation).
+  - DataTable: Excel-style header filter menus (`web/src/components/DataTable.tsx`)
+    - Per-column menu with two modes:
+      - enum: checkbox multi-select with in-menu search and Select All
+      - text: case-insensitive "contains"
+    - Default behavior for enum filters: all values pre-selected; unchecking dynamically filters rows out; full selection is treated as no filter; empty selection yields zero matches.
+    - Column filters compose with global search, sorting, and pagination.
+  - Enabled Excel-style filters across tables:
+    - Project Detail → Published Secrets
+    - Project Detail → CodeQL Findings (Severity/Rule/File/Message)
+    - Project Detail → Contributors (Login/Email) and Commit History (Message/Author/Email/SHA)
+    - OSS Vulnerabilities (`OssVulnTables`): Summary/Multiple/Vulnerabilities tables
+    - AI Tokens page: Provider/Validation/Project/Repo/Token/File
+    - Projects List: Name/Description/Primary Language/Status
+  - Terraform persistence: new DB table and API view
+    - DB: `db/portal_init/016_terraform.sql` adds `public.terraform_findings` (UUID id, bigserial api_id), RLS, and `api.terraform_findings` view.
+    - Server: `server/src/services/terraform_ingest.ts` ingests Checkov/Trivy FS outputs after scans and upserts into `public.terraform_findings`.
+    - UI: `TerraformFindings.tsx` now prefers PostgREST (`/db/terraform_findings?project_id=...&repo_short=...`) and falls back to static `/terraform_reports` JSON when DB is empty.
+    - Project Detail: Terraform findings table (Checkov/Trivy) with Excel-style filters.
+
+- Environment
+  - `.env.sample` adds `VALIDATE_GENAI_TOKENS=true` and per-provider flags (all default `true`).
+
+### Changed
+- Web Dockerfile: prefer `npm ci`; if lock is out-of-sync, fall back to `npm install` to avoid build failures in CI/containers.
+- `.gitignore`: avoid ignoring `web/src/lib/` by scoping `/lib/` and `/lib64/` to repo root.
+- `docker-compose.portal.yml`: clarified `seeder_langloc` purpose and ensured local build (no registry pull) for seeders.
+- `docker-compose.portal.yml`: mounted `terraform_reports` into web container for static serving.
+ - Initial seeding flow: remove OSS from `seeder_langloc` entrypoint (now runs only `scan_linecount.py` to persist LOC/files). CodeQL was not part of seeding and remains disabled during initial seed.
+ - Projects page: removed 'Scan' link from page header.
+ - Top header: renamed brand title from 'Security Portal' to 'GitHub Auditor'.
+ - Terraform Findings UI: added severity totals chips and clickable severity toggles (Critical/High/Medium/Low/Unknown).
+
+### Fixed
+- PostgREST permissions for AI tokens RPCs:
+  - Set `SECURITY DEFINER` and granted `EXECUTE` to `postgrest_anon` for `api.upsert_ai_tokens` and `api.record_ai_token_validation`.
+- PostgREST schema cache refresh after adding new RPCs via `NOTIFY pgrst, 'reload schema'`.
 - `README.md` with setup and usage instructions.
 - `requirements.txt` for Python dependencies.
 - `.gitignore` to exclude sensitive files and development artifacts.
@@ -109,6 +172,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed PATH to include `/opt/codeql` so `codeql` binary is found.
   - Built scanner image for `linux/amd64` to match the CodeQL CLI binary architecture; Docker Compose updated to run `scanner`/`seeder` with `platform: linux/amd64` to avoid architecture mismatch (Rosetta/QEMU errors).
 
+- Server GenAI token validation service fixes:
+  - Implemented missing validators: Gemini and Mistral
+  - Corrected Cohere endpoint to `https://api.cohere.ai/v1/models`
+  - Unified return types to narrow `status` to `'valid'|'invalid'|'error'` and resolve TypeScript build errors
+
 - Dashboard severity totals: `api.codeql_org_severity_totals` now `COALESCE`s null sums to `0` so empty datasets return numeric zeros instead of nulls.
 - Scanner: added `scan_engagement.py` to fetch stars/forks/watchers/open_issues (and best-effort counts for contributors) and persist via PostgREST.
   - Flags: `--org/--repo --token --postgrest-url --persist --max-workers`.
@@ -127,6 +195,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dockerfile: Made `bundler-audit` installation resilient to corporate SSL interception.
   - Option B: automatic HTTP RubyGems fallback if HTTPS install fails (last resort, insecure).
   - Option A (alternative): support `--build-arg CORP_CA_B64=<base64 PEM>` to trust a corporate root CA during build.
+
+- Docker build base images:
+  - Switched Node and Nginx bases to Amazon ECR Public mirror to avoid Docker Hub auth/rate limits in dev/CI
+    - `web/Dockerfile`: `public.ecr.aws/docker/library/node:20-alpine`, `public.ecr.aws/docker/library/nginx:alpine`
+    - `server/Dockerfile`: `public.ecr.aws/docker/library/node:20-alpine` (build and runtime)
 
 - Orchestrator: switched to streaming child process output (stdout+stderr) live to stdout and log files, so UI SSE shows real-time logs during scans. Logs are now written under `REPORT_DIR/logs` when `REPORT_DIR` is provided (e.g., by the server), otherwise under repo `logs/`.
 - Orchestrator: summary now writes to `REPORT_DIR/markdown/orchestration_summary.md` when `REPORT_DIR` is provided, preserving artifacts in the server-mounted runs directory.

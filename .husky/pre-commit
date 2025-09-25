@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Fast checks before commit
+# - Type-check web (no emit)
+# - Ensure web builds (Vite) to catch obvious issues
+
+npm --prefix web run typecheck || exit 1
+npm --prefix web run build || exit 1

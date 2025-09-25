@@ -11,7 +11,11 @@ import { projectsRouter } from './api/routes/projects.js';
 import { scansRouter } from './api/routes/scans.js';
 import { codeqlRouter } from './api/routes/codeql.js';
 import { dashboardRouter } from './api/routes/dashboard.js';
+import { ciRouter } from './api/routes/ci.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { aiTokensRouter } from './api/routes/ai_tokens.js';
+import { secretLeaksRouter } from './api/routes/secret_leaks.js';
+import { terraformRouter } from './api/routes/terraform.js';
 
 export function createApp() {
   const app = express();
@@ -36,6 +40,10 @@ export function createApp() {
   app.use('/api/scans', scansRouter);
   app.use('/api/scans/:id/codeql', codeqlRouter);
   app.use('/api/dashboard', dashboardRouter);
+  app.use('/api/repo', ciRouter);
+  app.use('/api/ai-tokens', aiTokensRouter);
+  app.use('/api/secret-leaks', secretLeaksRouter);
+  app.use('/api/terraform', terraformRouter);
 
   // Not found
   app.use((_: express.Request, res: express.Response) => {

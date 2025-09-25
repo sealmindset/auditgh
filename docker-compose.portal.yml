@@ -52,6 +52,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${AUDIT_WORKSPACE_DIR:-./runs}:/workspace/runs
+      - ./terraform_reports:/workspace/terraform_reports:ro
     ports:
       - "8080:8080"
 
@@ -64,6 +65,7 @@ services:
       - "5173:80"
     volumes:
       - ./oss_reports:/usr/share/nginx/html/oss_reports:ro
+      - ./terraform_reports:/usr/share/nginx/html/terraform_reports:ro
 
   # Optional: build the scanner image used by the server's docker runner
   scanner:
@@ -116,18 +118,6 @@ services:
         --postgrest-url http://postgrest:3000 \
         --max-workers ${LINECOUNT_MAX_WORKERS:-3} \
         --use-cloc -v || true; \
-      python scan_oss.py \
-        --org \"${GITHUB_ORG}\" \
-        --token \"${GITHUB_TOKEN}\" \
-        --use-graphql \
-        --include-archived --include-forks \
-        --persist-languages \
-        --enable-syft \
-        --syft-format ${SYFT_FORMAT:-cyclonedx-json} \
-        --enable-grype \
-        --grype-scan-mode ${GRYPE_SCAN_MODE:-sbom} \
-        --postgrest-url http://postgrest:3000 \
-        --max-workers ${OSS_MAX_WORKERS:-3} -v || true; \
       sleep ${SEED_LANGLOC_INTERVAL:-86400}; done"]
     profiles: ["seed"]
 

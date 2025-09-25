@@ -5,6 +5,10 @@ import { Issuer } from 'openid-client';
 
 export const healthRouter = Router();
 
+healthRouter.get('/', async (_req, res) => {
+  res.json({ ok: true, timestamp: new Date().toISOString() });
+});
+
 healthRouter.get('/db', async (_req, res) => {
   const ok = await pingDb();
   res.json({ ok });

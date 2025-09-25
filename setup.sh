@@ -254,7 +254,6 @@ main() {
   seed_projects
   # Seed LOC/files first so project_languages gets created; then OSS adds bytes
   seed_loc
-  seed_languages
   seed_engagement
 
   # Print non-fatal verification summary

@@ -9,7 +9,7 @@ export default function TopNav() {
   return (
     <header className="w-full border-b bg-white sticky top-0 z-20">
       <div className="max-w-screen-2xl mx-auto px-3 py-2 flex items-center justify-between">
-        <div className="font-semibold">Security Portal</div>
+        <div className="font-semibold">GitHub Auditor</div>
         <nav className="flex items-center gap-2 text-sm">
           <a className={linkCls('/')} href="/">Dashboard</a>
           <a className={linkCls('/projects')} href="/projects">Projects</a>

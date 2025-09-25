@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { xhrGetJson, xhrPostJson } from '../lib/xhr'
 import OssVulnTables from '../components/OssVulnTables'
+import TerraformFindings from '../components/TerraformFindings'
 import DataTable, { ColumnDef } from '../components/DataTable'
 
 export type ApiProject = { id: number; uuid: string; name: string; repo_url: string | null; description: string | null; is_active: boolean; created_at: string; updated_at?: string; contributors_count?: number; last_commit_at?: string | null; primary_language?: string | null; total_loc?: number; stars?: number | null; forks?: number | null }
@@ -85,6 +86,64 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
   const [loadingRepos, setLoadingRepos] = useState(false)
   const [cqTotals, setCqTotals] = useState<{ total: number; critical: number; high: number; medium: number; low: number; info: number; unknown: number }>({ total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0 })
 
+  // Combined Secrets (GenAI + Generic)
+  const [aiTokens, setAiTokens] = useState<any[]>([])
+  const [secretLeaks, setSecretLeaks] = useState<any[]>([])
+  const [secretsLoading, setSecretsLoading] = useState(false)
+  const [secretsError, setSecretsError] = useState<string|null>(null)
+  const [isAdmin, setIsAdmin] = useState<boolean>(false)
+  const [authChecked, setAuthChecked] = useState<boolean>(false)
+  const [showValues, setShowValues] = useState<boolean>(false)
+  // CI/CD (GitHub Actions) recent runs
+  const [ciRuns, setCiRuns] = useState<any[]>([])
+  const [ciLoading, setCiLoading] = useState(false)
+  const [ciError, setCiError] = useState<string|null>(null)
+
+  // Fetch auth to determine admin role for masking/value visibility
+  useEffect(() => {
+    xhrGetJson(`${base}/auth/me`).then((d: any) => {
+      const roles: string[] = d?.user?.roles || []
+      const admin = !!(roles.includes('super_admin'))
+      // In dev with authDisabled, treat as admin so value display is available
+      setIsAdmin(admin || !!d?.authDisabled)
+    }).catch(() => setIsAdmin(false)).finally(() => setAuthChecked(true))
+  }, [base])
+  const combinedSecrets = useMemo(() => {
+    const a = (aiTokens || []).map((r) => ({
+      source: 'genai',
+      type: r.provider || 'genai',
+      value: r.token,
+      validation_status: r.validation_status,
+      file_path: r.file_path,
+      line_start: r.line_start,
+      created_at: r.created_at,
+    }))
+    const b = (secretLeaks || []).map((r) => ({
+      source: 'generic',
+      type: r.detector || 'generic',
+      value: r.secret, // present only when admin route used
+      validation_status: r.validation_status,
+      file_path: r.file_path,
+      line_start: r.line_start,
+      created_at: r.created_at,
+    }))
+    return [...a, ...b]
+  }, [aiTokens, secretLeaks])
+
+  // Load CI/CD runs for this project's repo (if URL is present)
+  useEffect(() => {
+    const repo = ownerRepoFromUrl(item?.repo_url || null)
+    if (!repo) { setCiRuns([]); setCiError(null); return }
+    const [owner, name] = repo.split('/')
+    if (!owner || !name) { setCiRuns([]); setCiError(null); return }
+    setCiLoading(true)
+    setCiError(null)
+    xhrGetJson(`${base}/api/repo/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/actions/runs?per_page=50`)
+      .then((d: any) => setCiRuns(d?.items || []))
+      .catch((e: any) => setCiError(e?.message || 'Failed to load CI/CD runs'))
+      .finally(() => setCiLoading(false))
+  }, [base, item?.repo_url])
+
   // Map language names to Tailwind color classes (kept explicit to avoid purge)
   function langColorClass(language: string): string {
     const m: Record<string, string> = {
@@ -127,6 +186,28 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
       .catch((err: any) => setError(err?.message || 'Failed to load project'))
       .finally(() => setLoading(false))
   }, [base, uuid])
+
+  // Load GenAI tokens and generic secret leaks (admin route for value display)
+  useEffect(() => {
+    if (!item?.name) { setAiTokens([]); setSecretLeaks([]); return }
+    if (!authChecked) return
+    setSecretsLoading(true)
+    setSecretsError(null)
+    const aiSel = 'project_name,provider,token,repo_short,validation_status,file_path,line_start,line_end,created_at,updated_at'
+    const aiUrl = `${base}/db/ai_tokens?select=${encodeURIComponent(aiSel)}&project_name=eq.${encodeURIComponent(item.name)}&order=created_at.desc`
+    const secSelAdmin = 'project_name,repo_short,detector,rule_id,description,secret,file_path,line_start,line_end,confidence,validation_status,created_at,updated_at'
+    const secSelPublic = 'project_name,repo_short,detector,rule_id,description,file_path,line_start,line_end,confidence,validation_status,created_at,updated_at'
+    const secUrl = isAdmin
+      ? `${base}/api/secret-leaks/admin?select=${encodeURIComponent(secSelAdmin)}&project_name=${encodeURIComponent(item.name)}&order=created_at.desc`
+      : `${base}/api/secret-leaks?select=${encodeURIComponent(secSelPublic)}&project_name=${encodeURIComponent(item.name)}&order=created_at.desc`
+    Promise.all([xhrGetJson(aiUrl), xhrGetJson(secUrl)])
+      .then(([aRows, sData]) => {
+        setAiTokens(aRows || [])
+        setSecretLeaks(((sData?.items || []) as any[]))
+      })
+      .catch((e:any) => setSecretsError(e?.message || 'Failed to load secrets'))
+      .finally(() => setSecretsLoading(false))
+  }, [base, item?.name, isAdmin, authChecked])
 
   // Load languages breakdown
   useEffect(() => {
@@ -453,6 +534,90 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
 
         <OssVulnTables repoName={repoName} />
 
+        <TerraformFindings projectId={item.uuid} repoName={repoName} />
+
+        <div className="bg-white p-4 rounded shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-medium">Published Secrets (GenAI + Generic)</h2>
+            <div className="flex items-center gap-3 text-xs text-slate-600">
+              <span>Values shown only for admins</span>
+              {isAdmin && (
+                <button
+                  type="button"
+                  className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+                  onClick={() => setShowValues(v => !v)}
+                >
+                  {showValues ? 'Hide values' : 'Show values'}
+                </button>
+              )}
+            </div>
+          </div>
+          {secretsLoading ? (
+            <div className="text-sm text-slate-600">Loading…</div>
+          ) : secretsError ? (
+            <div className="text-sm text-red-700">{secretsError}</div>
+          ) : (combinedSecrets || []).length === 0 ? (
+            <div className="text-sm text-slate-600">None Found</div>
+          ) : (
+            (() => {
+              async function copyValue(v?: string) {
+                if (!v) return
+                try {
+                  if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(v)
+                  else {
+                    const ta = document.createElement('textarea')
+                    ta.value = v
+                    document.body.appendChild(ta)
+                    ta.select()
+                    document.execCommand('copy')
+                    document.body.removeChild(ta)
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+              function maskValue(v?: string): string {
+                const s = (v || '').toString()
+                if (!s) return '••••'
+                if (isAdmin && showValues) return s
+                const last4 = s.slice(-4)
+                return `••••${last4}`
+              }
+              const columns: ColumnDef<any>[] = [
+                { key: 'type', header: 'Type', sortable: true, filter: { type: 'enum' } },
+                { key: 'file_path', header: 'Path & File', sortable: true, filter: { type: 'text', getValue: (r) => String(r.file_path || '') }, render: (r) => (
+                  <span title={r.file_path || ''}>{r.file_path}{typeof r.line_start === 'number' ? `:${r.line_start}` : ''}</span>
+                ) },
+                { key: 'validation_status', header: 'Validated', sortable: true, filter: { type: 'enum', enumValues: ['valid','invalid','error','unknown'], getValue: (r) => String(r.validation_status || 'unknown').toLowerCase() }, render: (r) => (r.validation_status || '').toUpperCase() || 'UNKNOWN' },
+                { key: 'value', header: 'Value', sortable: false, filter: { type: 'text', disabled: !isAdmin, getValue: (r) => String(r.value || '') }, render: (r) => (
+                  <span className="inline-flex items-center gap-2">
+                    <span>{maskValue(r.value)}</span>
+                    {isAdmin && r.value ? (
+                      <button
+                        type="button"
+                        className="px-1 py-0.5 text-xs border rounded bg-slate-100 hover:bg-slate-200"
+                        title="Copy value"
+                        onClick={() => copyValue(r.value)}
+                      >
+                        Copy
+                      </button>
+                    ) : null}
+                  </span>
+                ) },
+                { key: 'created_at', header: 'Detected', sortable: true, render: (r) => r.created_at ? new Date(r.created_at).toLocaleString() : '' },
+              ]
+              return (
+                <DataTable
+                  data={combinedSecrets}
+                  columns={columns}
+                  defaultPageSize={10}
+                  filterKeys={['type','file_path','validation_status','value']}
+                />
+              )
+            })()
+          )}
+        </div>
+
         <div className="bg-white p-4 rounded shadow-sm">
           <div className="flex items-center justify-between mb-2">
             <h2 className="font-medium">CodeQL Findings</h2>
@@ -507,6 +672,7 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
                 key: 'severity',
                 header: 'Severity',
                 sortable: true,
+                filter: { type: 'enum', enumValues: ['critical','high','medium','low','info','unknown'], getValue: (it) => String(it.severity || 'unknown').toLowerCase() },
                 render: (it) => (
                   <span className={`text-xs px-2 py-0.5 rounded ${
                     (it.severity||'').toLowerCase()==='critical' ? 'bg-red-600 text-white' :
@@ -516,10 +682,10 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
                     (it.severity||'').toLowerCase()==='info' ? 'bg-blue-200 text-black' : 'bg-slate-200 text-black'}`}>{(it.severity||'unknown').toUpperCase()}</span>
                 )
               },
-              { key: 'rule_id', header: 'Rule', sortable: true },
-              { key: 'file', header: 'File', sortable: true },
+              { key: 'rule_id', header: 'Rule', sortable: true, filter: { type: 'text', getValue: (it) => String(it.rule_id || '') } },
+              { key: 'file', header: 'File', sortable: true, filter: { type: 'text', getValue: (it) => String(it.file || '') } },
               { key: 'line', header: 'Line', sortable: true },
-              { key: 'message', header: 'Message', sortable: false, render: (it) => (<span title={it.message || ''}>{it.message || ''}</span>) },
+              { key: 'message', header: 'Message', sortable: false, filter: { type: 'text', getValue: (it) => String(it.message || '') }, render: (it) => (<span title={it.message || ''}>{it.message || ''}</span>) },
               { key: 'help_uri', header: 'Docs', sortable: false, render: (it) => (it.help_uri ? <a className="text-blue-600 underline" href={it.help_uri} target="_blank" rel="noreferrer">Docs</a> : <span className="text-slate-400">—</span>) },
             ]
             return (
@@ -531,6 +697,42 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
               />
             )
           })()}
+        </div>
+
+        {/* CI/CD: GitHub Actions recent runs */}
+        <div className="bg-white p-4 rounded shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-medium">CI/CD</h2>
+            <div className="text-xs text-slate-600">GitHub Actions recent runs</div>
+          </div>
+          {ciError && <div className="text-sm text-red-700">{ciError}</div>}
+          {ciLoading ? (
+            <div className="text-sm text-slate-600">Loading…</div>
+          ) : (
+            (() => {
+              if (!ciRuns || ciRuns.length === 0) return <div className="text-sm text-slate-600">No workflow runs found.</div>
+              const columns: ColumnDef<any>[] = [
+                { key: 'workflow_name', header: 'Workflow', sortable: true, filter: { type: 'text', getValue: (r) => String(r.workflow_name || r.name || '') } },
+                { key: 'event', header: 'Event', sortable: true, filter: { type: 'enum' } },
+                { key: 'status', header: 'Status', sortable: true, filter: { type: 'enum', enumValues: ['queued','in_progress','completed'] } },
+                { key: 'conclusion', header: 'Conclusion', sortable: true, filter: { type: 'enum', enumValues: ['success','failure','cancelled','skipped','neutral','timed_out','action_required','stale'] } },
+                { key: 'branch', header: 'Branch', sortable: true, filter: { type: 'text', getValue: (r) => String(r.branch || '') } },
+                { key: 'run_number', header: 'Run #', sortable: true, widthClass: 'w-20' },
+                { key: 'actor_login', header: 'Actor', sortable: true, filter: { type: 'text', getValue: (r) => String(r.actor_login || '') } },
+                { key: 'commit_sha', header: 'Commit', sortable: true, filter: { type: 'text', getValue: (r) => String(r.commit_sha || '') }, render: (r) => r.commit_sha ? r.commit_sha.substring(0,7) : '' },
+                { key: 'created_at', header: 'Created', sortable: true, render: (r) => r.created_at ? new Date(r.created_at).toLocaleString() : '' },
+                { key: 'html_url', header: 'Link', sortable: false, render: (r) => r.html_url ? <a href={r.html_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View</a> : <span className="text-slate-400">—</span> },
+              ]
+              return (
+                <DataTable
+                  data={ciRuns}
+                  columns={columns}
+                  defaultPageSize={10}
+                  filterKeys={['workflow_name','event','status','conclusion','branch','actor_login','commit_sha']}
+                />
+              )
+            })()
+          )}
         </div>
 
         <div className="bg-white p-4 rounded shadow-sm">
@@ -618,10 +820,10 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
           ) : (
             (() => {
               const columns: ColumnDef<any>[] = [
-                { key: 'login', header: 'Login', sortable: true, render: (c) => (
+                { key: 'login', header: 'Login', sortable: true, filter: { type: 'text', getValue: (c) => String(c.display_name || c.login || '') }, render: (c) => (
                   <span className="font-medium">{c.display_name || c.login}<span className="text-slate-500">{c.display_name ? ` (@${c.login})` : ''}</span></span>
                 ) },
-                { key: 'email', header: 'Email', sortable: true },
+                { key: 'email', header: 'Email', sortable: true, filter: { type: 'text', getValue: (c) => String(c.email || '') } },
                 { key: 'last_commit_at', header: 'Last Commit', sortable: true, render: (c) => c.last_commit_at ? new Date(c.last_commit_at).toLocaleString() : '—' },
                 { key: 'commits_count', header: 'Commits', sortable: true, render: (c) => <span className="font-semibold">{c.commits_count ?? 0}</span> },
               ]
@@ -648,11 +850,11 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
           ) : (
             (() => {
               const columns: ColumnDef<any>[] = [
-                { key: 'message', header: 'Message', sortable: true, render: (c) => <span className="truncate inline-block max-w-[40rem]" title={c.message || ''}>{c.message || '(no message)'}</span> },
+                { key: 'message', header: 'Message', sortable: true, filter: { type: 'text', getValue: (c) => String(c.message || '') }, render: (c) => <span className="truncate inline-block max-w-[40rem]" title={c.message || ''}>{c.message || '(no message)'}</span> },
                 { key: 'committed_at', header: 'Committed At', sortable: true, render: (c) => new Date(c.committed_at).toLocaleString() },
-                { key: 'author_login', header: 'Author', sortable: true },
-                { key: 'author_email', header: 'Email', sortable: true },
-                { key: 'sha', header: 'SHA', sortable: true, render: (c) => c.sha?.substring(0,7) || '' },
+                { key: 'author_login', header: 'Author', sortable: true, filter: { type: 'text', getValue: (c) => String(c.author_login || '') } },
+                { key: 'author_email', header: 'Email', sortable: true, filter: { type: 'text', getValue: (c) => String(c.author_email || '') } },
+                { key: 'sha', header: 'SHA', sortable: true, filter: { type: 'text', getValue: (c) => String(c.sha || '') }, render: (c) => c.sha?.substring(0,7) || '' },
                 { key: 'url', header: 'Link', sortable: false, render: (c) => c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View</a> : <span className="text-slate-400">No link</span> },
               ]
               return (

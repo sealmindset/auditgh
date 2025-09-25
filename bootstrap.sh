@@ -89,28 +89,32 @@ EOF
     logs \
     runs
 
-  info "Bringing up portal stack: ${COMPOSE} up -d --remove-orphans"
-  ${COMPOSE} up -d --remove-orphans
+  info "Bringing up selected services (db, server, web, scanner)"
+  info "Command: ${COMPOSE} up -d --remove-orphans db server web scanner"
+  ${COMPOSE} up -d --remove-orphans db server web scanner
 
   if command -v curl >/dev/null 2>&1; then
-    info "Waiting for PostgREST on http://localhost:3001 (60s timeout)"
+    info "Waiting for Server on http://localhost:8080/health (60s timeout)"
     for i in {1..60}; do
-      if curl -fsS http://localhost:3001 >/dev/null; then
-        info "PostgREST is up."
+      if curl -fsS http://localhost:8080/health >/dev/null; then
+        info "Server is up."
         break
       fi
       sleep 1
       if [[ $i -eq 60 ]]; then
-        error "PostgREST did not become ready within 60s. Check logs: ${COMPOSE} logs -f postgrest"
+        error "Server did not become ready within 60s. Check logs: ${COMPOSE} logs -f server"
       fi
     done
   else
     info "curl not found; skipping readiness check."
   fi
 
-  info "Portal web:    http://localhost:5173"
-  info "PostgREST API: http://localhost:3001"
+  info "Web (portal):  http://localhost:5173"
+  info "Server:        http://localhost:8080"
+  info "PostgREST:     http://localhost:3001"
+  info "DB:            localhost:5434 (inside container: db:5432)"
   info "Server logs:   ${COMPOSE} logs -f server"
+  info "Scanner image: auditgh-scanner:latest (built by 'scanner' service if missing)"
 }
 
 main "$@"

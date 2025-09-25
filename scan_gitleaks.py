@@ -23,6 +23,12 @@ import requests
 from src.github.rate_limit import make_rate_limited_session, request_with_rate_limit
 from dotenv import load_dotenv
 
+from secret_scanner_utils import (
+    normalize_gitleaks_record,
+    ensure_project,
+    persist_secret_leaks,
+)
+
 # Load environment variables from .env file
 load_dotenv(override=True)
 
@@ -291,24 +297,36 @@ def run_gitleaks_scan(repo_path: str, repo_name: str, report_dir: str) -> Dict[s
             "report_file": output_md
         }
 
-def process_repo(repo: Dict[str, Any], report_dir: str):
-    """Process a single repository: clone and scan for secrets."""
+def process_repo(
+    repo: Dict[str, Any],
+    report_dir: str,
+    *,
+    persist: bool = False,
+    postgrest_url: Optional[str] = None,
+) -> int:
+    """Process a single repository: clone, scan, and optionally persist secrets."""
+
     repo_name = repo['name']
     repo_full_name = repo['full_name']
-    
+
     logging.info(f"Processing repository: {repo_full_name}")
-    
+
     repo_report_dir = os.path.join(report_dir, repo_name)
     os.makedirs(repo_report_dir, exist_ok=True)
-    
+
     repo_path = clone_repo(repo)
     if not repo_path:
         logging.error(f"Failed to clone repository: {repo_full_name}")
-        return
-    
+        return 0
+
+    hits: List[Dict[str, Any]] = []
+    persisted = 0
+    pg_url = (postgrest_url or os.getenv('POSTGREST_URL') or 'http://localhost:3001').rstrip('/')
+    ingest_logger = logging.getLogger('gitleaks.persist')
+
     try:
         gitleaks_result = run_gitleaks_scan(repo_path, repo_name, repo_report_dir)
-        
+
         if gitleaks_result.get('success', False):
             if gitleaks_result['returncode'] == 1:
                 logging.warning(f"Found secrets in {repo_full_name}")
@@ -316,16 +334,41 @@ def process_repo(repo: Dict[str, Any], report_dir: str):
                 logging.info(f"No secrets found in {repo_full_name}")
         else:
             logging.error(f"Failed to scan {repo_full_name}: {gitleaks_result.get('error', 'Unknown error')}")
-    
+
+        output_json = None
+        if isinstance(gitleaks_result, dict):
+            output_json = gitleaks_result.get('output_file')
+        if output_json and os.path.exists(output_json):
+            try:
+                with open(output_json, 'r', encoding='utf-8') as jf:
+                    data = json.load(jf)
+                records = data if isinstance(data, list) else ([data] if data else [])
+                for rec in records:
+                    normalized = normalize_gitleaks_record(rec)
+                    if normalized:
+                        hits.append(normalized)
+            except Exception as exc:
+                logging.warning(f"Failed to parse gitleaks JSON for {repo_full_name}: {exc}")
+
+        if persist and hits:
+            project_api_id = ensure_project(pg_url, repo, ingest_logger)
+            if project_api_id is None:
+                ingest_logger.warning('Skipping persistence for %s; unable to resolve project api_id', repo_full_name)
+            else:
+                persisted = persist_secret_leaks(pg_url, project_api_id, repo_name, hits, ingest_logger)
+                ingest_logger.info('Persisted %s secret leak findings from %s', persisted, repo_full_name)
+
     except Exception as e:
         logging.error(f"Error processing repository {repo_full_name}: {str(e)}")
-    
+
     finally:
         try:
             if os.path.exists(repo_path):
                 shutil.rmtree(repo_path)
         except Exception as e:
             logging.error(f"Error cleaning up repository {repo_full_name}: {str(e)}")
+
+    return len(hits) if not persist else persisted or len(hits)
 
 def generate_summary_report(report_dir: str, repo_count: int, secret_repos: List[str]):
     """Generate a summary report of all gitleaks scans."""
@@ -387,6 +430,10 @@ def main():
         default_max_workers = 5
     parser.add_argument('--max-workers', type=int, default=default_max_workers,
                       help=f'Max worker threads (default: {default_max_workers}; env GITLEAKS_MAX_WORKERS or SCAN_MAX_WORKERS)')
+    parser.add_argument('--persist', action='store_true',
+                      help='Persist detected secrets to PostgREST secret_leaks via RPC')
+    parser.add_argument('--postgrest-url', type=str, default=os.getenv('POSTGREST_URL') or 'http://localhost:3001',
+                      help='PostgREST base URL (default: %(default)s)')
     
     args = parser.parse_args()
     

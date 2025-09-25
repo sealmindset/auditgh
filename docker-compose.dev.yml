@@ -1,0 +1,53 @@
+version: '3.8'
+services:
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -lc "npm ci && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - VITE_API_BASE=http://localhost:8080
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    # Useful for Apple Silicon/ARM as well
+    platform: linux/amd64
+  server:
+    build:
+      context: ./server
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      SCANNER_IMAGE: ${SCANNER_IMAGE}
+    depends_on:
+      - db
+      - postgrest
+    ports:
+      - "8080:8080"
+  db:
+    image: pgvector/pgvector:pg14
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5434:5432"
+    volumes:
+      - pg_data_dev:/var/lib/postgresql/data
+      - ./db/portal_init:/docker-entrypoint-initdb.d:ro
+  postgrest:
+    image: postgrest/postgrest:latest
+    depends_on:
+      - db
+    environment:
+      PGRST_DB_URI: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      PGRST_DB_SCHEMAS: api
+      PGRST_DB_ANON_ROLE: postgrest_anon
+      PGRST_SERVER_PORT: 3000
+      PGRST_JWT_SECRET: ${POSTGREST_JWT_SECRET}
+    ports:
+      - "3001:3000"
+volumes:
+  pg_data_dev:

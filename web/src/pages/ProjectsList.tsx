@@ -86,14 +86,16 @@ export default function ProjectsList() {
     {
       key: 'name',
       header: 'Name',
+      filter: { type: 'text', getValue: (row) => String(row.name || '') },
       render: (row) => (
         <a href={`/projects/${row.uuid}?id=${row.id}`} className="text-blue-700 hover:underline">{row.name}</a>
       ),
     },
-    { key: 'description', header: 'Description', sortable: false },
+    { key: 'description', header: 'Description', sortable: false, filter: { type: 'text', getValue: (row) => String(row.description || '') } },
     {
       key: 'primary_language',
       header: 'Primary Language',
+      filter: { type: 'enum', getValue: (row) => String(row.primary_language || '') },
       render: (row) => (
         row.primary_language ? (
           <span className="inline-block rounded border border-slate-200 bg-slate-100 px-2 py-0.5 text-xs">
@@ -125,6 +127,7 @@ export default function ProjectsList() {
     {
       key: 'is_active',
       header: 'Status',
+      filter: { type: 'enum', enumValues: ['Active','Archived'], getValue: (row) => (row.is_active ? 'Active' : 'Archived') },
       render: (row) => (row.is_active ? <span className="text-green-700">Active</span> : <span className="text-slate-500">Archived</span>),
     },
     {
@@ -186,9 +189,6 @@ export default function ProjectsList() {
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <header className="flex items-center justify-between p-4 border-b bg-white sticky top-0">
         <h1 className="font-semibold">Projects</h1>
-        <nav className="text-sm">
-          <a href="/" className="text-blue-600 hover:underline">Scan</a>
-        </nav>
       </header>
       <main className="p-4 space-y-4">
         {/* CodeQL Org Severity Totals with click-to-filter */}

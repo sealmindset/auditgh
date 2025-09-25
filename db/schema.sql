@@ -10,3 +10,7 @@
 \i ./portal_init/009_project_language_loc.sql
 \i ./portal_init/010_fix_upsert_languages_fn.sql
 \i ./portal_init/011_project_engagement.sql
+\i ./portal_init/012_codeql.sql
+\i ./portal_init/013_oss_indexes.sql
+\i ./portal_init/014_ai_tokens.sql
+\i ./portal_init/015_secret_leaks.sql

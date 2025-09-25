@@ -41,6 +41,7 @@ SUMMARY_FILE = SUMMARY_DIR / "orchestration_summary.md"
 SCANNER_REPORT_LINKS: Dict[str, List[Path]] = {
     "cicd": [REPO_ROOT / "ci_reports" / "ci_summary.md"],
     "gitleaks": [REPO_ROOT / "secrets_reports" / "secrets_scan_summary.md"],
+    "trufflehog": [REPO_ROOT / "secrets_reports" / "trufflehog_summary.md"],
     "hardcoded_ips": [REPO_ROOT / "hardcoded_ips_reports" / "HARDCODED_IPS_SUMMARY.md"],
     "oss": [REPO_ROOT / "oss_reports" / "oss_summary.md"],
     "terraform": [REPO_ROOT / "terraform_reports" / "terraform_scan_summary.md"],
@@ -50,6 +51,8 @@ SCANNER_REPORT_LINKS: Dict[str, List[Path]] = {
     # binaries scanner summary
     "binaries": [REPO_ROOT / "binaries_reports" / "binaries_scan_summary.md"],
     "linecount": [REPO_ROOT / "linecount_reports" / "linecount_scan_summary.md"],
+    # genai tokens scanner
+    "genai_tokens": [REPO_ROOT / "genai_tokens_reports"],
     # engagement snapshots are persisted to PostgREST; no local report
     "engagement": [],
     # shai_hulud scan currently logs only; no markdown summary
@@ -117,6 +120,7 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
     scanners: List[str] = [
         "cicd",
         "gitleaks",
+        "trufflehog",
         "hardcoded_ips",
         "oss",
         "terraform",
@@ -126,6 +130,7 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
         "linecount",
         "engagement",
         "shai_hulud",
+        "genai_tokens",
     ]
 
     if args.only:
@@ -157,10 +162,26 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
             cmd += ["--repo", repo]
         else:
             cmd += ["--org", org] + include_flags
+        postgrest_url = os.getenv("POSTGREST_URL") or "http://localhost:3001"
+        cmd += ["--persist", "--postgrest-url", postgrest_url]
         cmd += vflags
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "gitleaks", "cmd": cmd})
+
+    # trufflehog
+    if "trufflehog" in scanners:
+        cmd = [sys.executable, str(REPO_ROOT / "scan_trufflehog.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        postgrest_url = os.getenv("POSTGREST_URL") or "http://localhost:3001"
+        cmd += ["--persist", "--postgrest-url", postgrest_url]
+        cmd += vflags
+        if token:
+            cmd += ["--token", token]
+        cmds.append({"name": "trufflehog", "cmd": cmd})
 
     # hardcoded_ips (Semgrep)
     if "hardcoded_ips" in scanners:
@@ -311,6 +332,21 @@ def _build_scanner_commands(args: argparse.Namespace) -> List[Dict[str, object]]
         if token:
             cmd += ["--token", token]
         cmds.append({"name": "linecount", "cmd": cmd})
+
+    # genai_tokens (GenAI API token detection with persistence to PostgREST)
+    if "genai_tokens" in scanners:
+        cmd = [sys.executable, str(REPO_ROOT / "scan_genai_tokens.py")]
+        if repo:
+            cmd += ["--repo", repo]
+        else:
+            cmd += ["--org", org] + include_flags
+        # Persist by default and point to PostgREST
+        postgrest_url = os.getenv("POSTGREST_URL") or "http://localhost:3001"
+        cmd += ["--persist", "--postgrest-url", postgrest_url]
+        cmd += vflags
+        if token:
+            cmd += ["--token", token]
+        cmds.append({"name": "genai_tokens", "cmd": cmd})
 
     # engagement (stars/forks/watchers/issues to PostgREST if enabled)
     if "engagement" in scanners:
