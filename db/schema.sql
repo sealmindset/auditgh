@@ -14,3 +14,6 @@
 \i ./portal_init/013_oss_indexes.sql
 \i ./portal_init/014_ai_tokens.sql
 \i ./portal_init/015_secret_leaks.sql
+\i ./portal_init/016_terraform.sql
+\i ./portal_init/017_ai_assist.sql
+\i ./portal_init/018_exploit_types.sql

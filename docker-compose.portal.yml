@@ -53,6 +53,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${AUDIT_WORKSPACE_DIR:-./runs}:/workspace/runs
       - ./terraform_reports:/workspace/terraform_reports:ro
+      - ./binaries_reports:/workspace/binaries_reports:ro
     ports:
       - "8080:8080"
 
@@ -66,6 +67,15 @@ services:
     volumes:
       - ./oss_reports:/usr/share/nginx/html/oss_reports:ro
       - ./terraform_reports:/usr/share/nginx/html/terraform_reports:ro
+      - ./binaries_reports:/usr/share/nginx/html/binaries_reports:ro
+
+  # Optional: local LLM via Ollama
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ./ollama:/root/.ollama
+    restart: unless-stopped
+    profiles: ["ai"]
 
   # Optional: build the scanner image used by the server's docker runner
   scanner:

@@ -35,6 +35,7 @@ export default function App() {
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), [])
   const repoParam = urlParams.get('repo') || ''
   const [scope, setScope] = useState<'org'|'repo'>(repoParam ? 'repo' : 'org')
+  const [repoSingle, setRepoSingle] = useState<string>(repoParam)
   // CodeQL options
   const codeqlSupportedLangs = useMemo(() => ['cpp','csharp','go','java','javascript','python','ruby','swift','kotlin'] as const, [])
   const [codeqlLangs, setCodeqlLangs] = useState<string[]>([])
@@ -80,6 +81,41 @@ export default function App() {
 
   const selected = useMemo(() => projects.find(p => p.id === selectedProject) || null, [projects, selectedProject])
 
+  // Helper to parse owner/repo from a URL or plain input; falls back to repo short when possible
+  function ownerRepoFromUrl(url: string | null): string | null {
+    if (!url) return null
+    const raw = url.trim()
+    const sshMatch = /^git@[^:]+:([^\s]+)$/i.exec(raw)
+    if (sshMatch) {
+      const path = sshMatch[1].replace(/\.git$/i, '')
+      const parts = path.split('/')
+      if (parts.length >= 2) return `${parts[0]}/${parts[1]}`
+      return null
+    }
+    const plainMatch = /^([^\s/]+)\/([^\s/]+)(?:\.git)?$/i.exec(raw)
+    if (plainMatch && !raw.includes('://')) {
+      return `${plainMatch[1]}/${plainMatch[2].replace(/\.git$/i, '')}`
+    }
+    try {
+      const u = new URL(raw)
+      const cleaned = u.pathname.replace(/^\//,'').replace(/\.git$/i, '')
+      const parts = cleaned.split('/')
+      if (parts.length >= 2) return `${parts[0]}/${parts[1]}`
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  // When switching to single-repo scope, auto-fill repo from selected project's repo_url if input is empty
+  useEffect(() => {
+    if (scope !== 'repo') return
+    if (repoSingle) return
+    const fromProj = ownerRepoFromUrl(selected?.repo_url || null)
+    if (fromProj) setRepoSingle(fromProj)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, selected?.repo_url])
+
   function stopStream() {
     esRef.current?.close();
     esRef.current = null;
@@ -95,8 +131,24 @@ export default function App() {
     setStarting(true)
     try {
       const payload: any = { project_id: selected.id, profile, scanners: selectedScanners }
-      if (scope === 'repo' && repoParam) { payload.scope = 'repo'; payload.repo = repoParam }
-      else { payload.scope = 'org' }
+      let repoToUse = ''
+      if (scope === 'repo') {
+        // Prefer explicit input; fallback to owner/repo from selected project
+        repoToUse = (repoSingle || ownerRepoFromUrl(selected.repo_url) || '').trim()
+      }
+      if (scope === 'repo' && repoToUse) {
+        payload.scope = 'repo'
+        // Accept either owner/repo or short; scanner will resolve owner via org
+        payload.repo = repoToUse
+      } else if (scope === 'repo' && !repoToUse) {
+        const msg = 'Please enter a repository when using Single repo scope'
+        setError(msg)
+        setLogs(prev => [...prev, msg])
+        setStarting(false)
+        return
+      } else {
+        payload.scope = 'org'
+      }
       // Pass CodeQL-specific options when CodeQL scanner is selected
       if (selectedScanners.includes('codeql')) {
         if (codeqlLangs.length > 0) payload.codeql_languages = codeqlLangs
@@ -277,7 +329,7 @@ export default function App() {
           </div>
         )}
         <div className="bg-white p-4 rounded shadow-sm">
-          <h2 className="font-medium mb-2">Run Shai-Hulud Scan</h2>
+          <h2 className="font-medium mb-2">Repo Scanner</h2>
           <div className="flex flex-col gap-3">
             <label className="text-sm">
               <span className="mr-2">Project</span>
@@ -300,9 +352,22 @@ export default function App() {
                 </label>
                 <label className="flex items-center gap-1">
                   <input type="radio" name="scope" checked={scope==='repo'} onChange={() => setScope('repo')} />
-                  <span>Single repo{repoParam ? `: ${repoParam}` : ''}</span>
+                  <span>Single repo</span>
                 </label>
               </div>
+              {scope==='repo' && (
+                <div className="mt-2 max-w-md">
+                  <label className="flex flex-col text-sm">
+                    <span className="text-xs text-slate-600">Repository (owner/repo or short; defaults from selected project)</span>
+                    <input
+                      className="border rounded px-2 py-1"
+                      value={repoSingle}
+                      onChange={e => setRepoSingle(e.target.value)}
+                      placeholder="e.g. sealmindset/adjustTheBed or adjustTheBed"
+                    />
+                  </label>
+                </div>
+              )}
             </div>
             <div className="text-sm">
               <div className="mb-2 font-medium">Profile</div>
@@ -416,104 +481,7 @@ export default function App() {
             <div ref={logsEndRef} />
           </div>
         </div>
-
-        {/* CodeQL Findings Panel */}
-        <div className="bg-white p-4 rounded shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-medium">CodeQL Findings</h2>
-            <div className="text-xs text-slate-600">{scan ? `Scan: ${scan.id}` : 'Start a scan to enable findings'}</div>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3 text-sm">
-            <label className="flex flex-col">
-              <span className="text-xs text-slate-600">Repo (short name)</span>
-              <input className="border rounded px-2 py-1" value={cqRepo} onChange={e => setCqRepo(e.target.value)} placeholder="e.g. oscp" />
-            </label>
-            <label className="flex flex-col">
-              <span className="text-xs text-slate-600">Search</span>
-              <input className="border rounded px-2 py-1" value={cqSearch} onChange={e => setCqSearch(e.target.value)} placeholder="rule/file/message" />
-            </label>
-            <label className="flex flex-col">
-              <span className="text-xs text-slate-600">Page size</span>
-              <select className="border rounded px-2 py-1" value={cqPageSize} onChange={e => setCqPageSize(parseInt(e.target.value))}>
-                {[10,25,50,100].map(n => <option key={n} value={n}>{n}</option>)}
-              </select>
-            </label>
-            <div className="flex items-end gap-2">
-              <button className="px-3 py-1 bg-slate-200 rounded" disabled={!scan || cqLoading} onClick={() => loadFindings(0)}>Refresh</button>
-              <button className="px-3 py-1 bg-slate-100 rounded" onClick={() => { setCqSearch(''); setCqSev([...defaultSeverities]); setCqSort('severity'); setCqDir('desc'); setCqPage(0); setCqFindings([]); setCqTotal(0); }}>Reset</button>
-            </div>
-          </div>
-          {/* Totals bar with click-to-filter */}
-          <div className="text-xs mb-2 flex flex-wrap items-center gap-2">
-            <span className="mr-1">Totals:</span>
-            <button className={`px-2 py-0.5 rounded border ${cqSev.length===defaultSeverities.length ? 'bg-slate-800 text-white' : 'bg-slate-100'}`} onClick={() => { setCqSev([...defaultSeverities]); setCqPage(0) }}>All {cqTotals.total}</button>
-            <button className="px-2 py-0.5 rounded text-white bg-red-600" onClick={() => { setCqSev(['critical']); setCqPage(0) }}>Critical {cqTotals.critical}</button>
-            <button className="px-2 py-0.5 rounded text-white bg-red-500" onClick={() => { setCqSev(['high']); setCqPage(0) }}>High {cqTotals.high}</button>
-            <button className="px-2 py-0.5 rounded bg-amber-400" onClick={() => { setCqSev(['medium']); setCqPage(0) }}>Medium {cqTotals.medium}</button>
-            <button className="px-2 py-0.5 rounded bg-yellow-200" onClick={() => { setCqSev(['low']); setCqPage(0) }}>Low {cqTotals.low}</button>
-            <button className="px-2 py-0.5 rounded bg-blue-200" onClick={() => { setCqSev(['info']); setCqPage(0) }}>Info {cqTotals.info}</button>
-            <button className="px-2 py-0.5 rounded bg-slate-200" onClick={() => { setCqSev(['unknown']); setCqPage(0) }}>Unknown {cqTotals.unknown}</button>
-          </div>
-          <div className="text-xs mb-2">
-            <span className="mr-2">Severity:</span>
-            {["critical","high","medium","low","info","unknown"].map(s => (
-              <label key={s} className="mr-3 inline-flex items-center gap-1">
-                <input type="checkbox" checked={cqSev.includes(s)} onChange={(e) => setCqSev(prev => e.target.checked ? Array.from(new Set([...prev, s])) : prev.filter(x => x!==s))} />
-                <span className="capitalize">{s}</span>
-              </label>
-            ))}
-          </div>
-          {cqError && <div className="text-red-600 text-sm mb-2">{cqError}</div>}
-          <div className="overflow-auto border rounded">
-            <table className="min-w-full text-sm">
-              <thead className="bg-slate-100">
-                <tr>
-                  {([['Severity','severity'],['Rule','rule'],['File','file'],['Line','line'],['Message','message'],['Docs','docs']] as const).map(([label,key]) => (
-                    <th key={key} className="text-left px-2 py-1 cursor-pointer select-none" onClick={() => { if (key==='docs' || key==='message') return; const k = key as 'severity'|'rule'|'file'|'line'; if (cqSort===k) setCqDir(cqDir==='asc'?'desc':'asc'); else { setCqSort(k); setCqDir('asc'); } }}>
-                      {label}{(cqSort===key ? (cqDir==='asc'?' ▲':' ▼') : '')}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {cqLoading ? (
-                  <tr><td colSpan={6} className="px-2 py-2 text-slate-500">Loading…</td></tr>
-                ) : cqFindings.length === 0 ? (
-                  <tr><td colSpan={6} className="px-2 py-2 text-slate-500">No findings</td></tr>
-                ) : (
-                  cqFindings.map((it, idx) => (
-                    <tr key={idx} className="border-t">
-                      <td className="px-2 py-1"><span className={`text-xs px-2 py-0.5 rounded ${
-                        (it.severity||'').toLowerCase()==='critical' ? 'bg-red-600 text-white' :
-                        (it.severity||'').toLowerCase()==='high' ? 'bg-red-500 text-white' :
-                        (it.severity||'').toLowerCase()==='medium' ? 'bg-amber-400 text-black' :
-                        (it.severity||'').toLowerCase()==='low' ? 'bg-yellow-200 text-black' :
-                        (it.severity||'').toLowerCase()==='info' ? 'bg-blue-200 text-black' : 'bg-slate-200 text-black'}`}>{(it.severity||'unknown').toUpperCase()}</span></td>
-                      <td className="px-2 py-1 whitespace-nowrap">{it.rule_id || ''}</td>
-                      <td className="px-2 py-1 whitespace-nowrap">{it.file || ''}</td>
-                      <td className="px-2 py-1">{it.line || ''}</td>
-                      <td className="px-2 py-1 max-w-[40rem] truncate" title={it.message || ''}>{it.message || ''}</td>
-                      <td className="px-2 py-1">{it.help_uri ? <a className="text-blue-600 underline" href={it.help_uri} target="_blank" rel="noreferrer">Docs</a> : <span className="text-slate-400">—</span>}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center justify-between mt-2 text-xs">
-            <div>
-              {cqTotal > 0 ? (
-                <span>Showing {cqPage*cqPageSize + (cqFindings.length?1:0)}–{cqPage*cqPageSize + cqFindings.length} of {cqTotal}</span>
-              ) : (
-                <span>Showing 0 of 0</span>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <button className="px-2 py-0.5 bg-slate-200 rounded disabled:opacity-50" disabled={cqPage===0 || cqLoading} onClick={() => loadFindings(Math.max(0, cqPage-1))}>Prev</button>
-              <button className="px-2 py-0.5 bg-slate-200 rounded disabled:opacity-50" disabled={(cqPage+1)*cqPageSize>=cqTotal || cqLoading} onClick={() => loadFindings(cqPage+1)}>Next</button>
-            </div>
-          </div>
-        </div>
+        {/* CodeQL Findings Panel removed */}
       </main>
     </div>
   )

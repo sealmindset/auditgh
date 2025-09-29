@@ -11,6 +11,7 @@ import { ingestCodeqlFindings } from '../services/codeql_ingest.js';
 import { ingestOssFindings } from '../services/oss_ingest.js';
 import { ingestSecretLeaks } from '../services/secret_leak_ingest.js';
 import { ingestTerraformFindings } from '../services/terraform_ingest.js';
+import { ingestBinariesFindings } from '../services/binaries_ingest.js';
 
 export type ScanProgressEvent = {
   type: 'log' | 'status' | 'done' | 'error';
@@ -112,6 +113,11 @@ class InMemoryScanRunner {
           await ingestTerraformFindings(scan);
         } catch (e) {
           logger.warn({ e, scanId }, 'Terraform ingestion failed');
+        }
+        try {
+          await ingestBinariesFindings(scan);
+        } catch (e) {
+          logger.warn({ e, scanId }, 'Binaries ingestion failed');
         }
         this.appendLog(scanId, 'Scan completed successfully');
         this.broadcast(scanId, { type: 'done', message: 'success', timestamp: new Date().toISOString() });
@@ -262,6 +268,11 @@ class InMemoryScanRunner {
           await ingestTerraformFindings(scan);
         } catch (e) {
           logger.warn({ e, scanId }, 'Terraform ingestion failed');
+        }
+        try {
+          await ingestBinariesFindings(scan);
+        } catch (e) {
+          logger.warn({ e, scanId }, 'Binaries ingestion failed');
         }
         this.appendLog(scanId, 'Scan completed successfully');
         this.broadcast(scanId, { type: 'done', message: 'success', timestamp: new Date().toISOString() });

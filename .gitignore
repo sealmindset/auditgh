@@ -61,3 +61,5 @@ hardcoded_ips_reports/
 secrets_reports/
 *_reports/
 runs/
+
+ollama/models/

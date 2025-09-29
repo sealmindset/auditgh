@@ -191,22 +191,7 @@ export default function ProjectsList() {
         <h1 className="font-semibold">Projects</h1>
       </header>
       <main className="p-4 space-y-4">
-        {/* CodeQL Org Severity Totals with click-to-filter */}
-        <div className="bg-white p-3 rounded shadow-sm">
-          <div className="text-sm mb-2 text-slate-700">CodeQL Severity Totals</div>
-          <div className="text-xs mb-1 flex flex-wrap items-center gap-2">
-            <button className={`px-2 py-0.5 rounded border ${sevFilter.length===defaultSeverities.length ? 'bg-slate-800 text-white' : 'bg-slate-100'}`} onClick={() => setSevFilter([...defaultSeverities])}>All {orgTotals.total}</button>
-            <button className="px-2 py-0.5 rounded text-white bg-red-600" onClick={() => setSevFilter(['critical'])}>Critical {orgTotals.critical}</button>
-            <button className="px-2 py-0.5 rounded text-white bg-red-500" onClick={() => setSevFilter(['high'])}>High {orgTotals.high}</button>
-            <button className="px-2 py-0.5 rounded bg-amber-400" onClick={() => setSevFilter(['medium'])}>Medium {orgTotals.medium}</button>
-            <button className="px-2 py-0.5 rounded bg-yellow-200" onClick={() => setSevFilter(['low'])}>Low {orgTotals.low}</button>
-            <button className="px-2 py-0.5 rounded bg-blue-200" onClick={() => setSevFilter(['info'])}>Info {orgTotals.info}</button>
-            <button className="px-2 py-0.5 rounded bg-slate-200" onClick={() => setSevFilter(['unknown'])}>Unknown {orgTotals.unknown}</button>
-          </div>
-          {sevFilter.length!==defaultSeverities.length && (
-            <div className="text-xs text-slate-600">Filtering projects to those with selected severity findings.</div>
-          )}
-        </div>
+        {/* CodeQL Severity Totals removed */}
         <div className="flex items-center justify-between text-sm">
           <div className="invisible">.</div>
           <label className="flex items-center gap-2">

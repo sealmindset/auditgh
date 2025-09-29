@@ -1,3 +1,8 @@
+ - Project Overview: Exploit Types grid and Help modal
+   - UI: `web/src/components/ExploitTypeGrid.tsx` renders a 5×5 grid of exploit categories under the Project Overview Exploit pill (manual toggles persist to DB). `web/src/components/ExploitHelpModal.tsx` adds a help modal loaded via `/exploithelp.json` with definitions table.
+   - Wiring: Integrated in `web/src/pages/ProjectDetail.tsx` with a help icon. Exploit pill remains scan-derived only and is not affected by the grid toggles.
+   - DB: `db/portal_init/018_exploit_types.sql` adds `public.project_exploit_types` (UUID id, bigserial api_id), RLS, view `api.project_exploit_types`, and RPC `api.upsert_project_exploit_type` (SECURITY DEFINER). `db/schema.sql` updated to include the migration.
+
   - Project Detail: CI/CD section showing recent GitHub Actions workflow runs for the repository
     - UI: `web/src/pages/ProjectDetail.tsx` renders a DataTable with filters (Workflow/Event/Status/Conclusion/Branch/Actor/Commit).
     - Server: `server/src/api/routes/ci.ts` proxies GitHub API `actions/runs` with a lean normalized payload and auth via env token.
@@ -54,18 +59,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - UI: `TerraformFindings.tsx` now prefers PostgREST (`/db/terraform_findings?project_id=...&repo_short=...`) and falls back to static `/terraform_reports` JSON when DB is empty.
     - Project Detail: Terraform findings table (Checkov/Trivy) with Excel-style filters.
 
+ - Project Detail: Binaries table
+   - Scanning: `scan_binaries.py` writes per-repo JSON/Markdown into `binaries_reports/<repo>/`.
+   - Web: `docker-compose.portal.yml` mounts `./binaries_reports` into the web container at `/usr/share/nginx/html/binaries_reports` for static access.
+   - UI: `web/src/components/BinariesTable.tsx` loads `/binaries_reports/<repo>/<repo>_binaries.json` and renders a DataTable with filters (Filename/Path/Ext/Size/Executable/Type/SHA256/Mode). Links to Markdown/JSON in header.
+   - Integrated in `web/src/pages/ProjectDetail.tsx` below Terraform Findings.
+
 - Environment
   - `.env.sample` adds `VALIDATE_GENAI_TOKENS=true` and per-provider flags (all default `true`).
+
+- AI Assist (provider-selectable):
+  - DB: `db/portal_init/017_ai_assist.sql` adds `public.ai_assist_analyses` (UUID id, bigserial api_id), RLS, and API view `api.ai_assist_analyses`.
+  - Server: `/api/ai/assist` endpoint performs analysis using Ollama (default gpt-oss) or OpenAI and persists the result and reference extracts.
+  - Providers: `server/src/services/ai_providers/ollama.ts`, `server/src/services/ai_providers/openai.ts`; orchestration in `server/src/services/ai_assist.ts`.
+  - UI: `web/src/components/AiAssistantPanel.tsx` with provider/model selection, response display; integrated as "Ask AI" per-row actions in:
+    - Terraform Findings (`TerraformFindings.tsx`)
+    - OSS Vulnerabilities (`OssVulnTables.tsx`)
+    - CodeQL Findings and Published Secrets (`ProjectDetail.tsx`)
+  - Compose: optional `ollama` service (ports 11434) with local model cache volume.
+
+- Exploitability statuses and Agent AI citations:
+  - DB: `db/portal_init/018_exploitability.sql` adds `public.exploitability_statuses` (UUID id, bigserial api_id), RLS, and API view `api.exploitability_statuses`.
+  - Server:
+    - Discovery service `server/src/services/discovery.ts` queries OSV, KEV (CISA), EPSS, GitHub Search, and DuckDuckGo; returns ranked, de-duped citations.
+    - New route `server/src/api/routes/exploitability.ts`:
+      - GET `/api/exploitability?type=<cve|ghsa>&keys=KEY1,KEY2` to batch fetch statuses.
+      - POST `/api/exploitability` to upsert manual status + citations.
+    - AI Assist (`server/src/services/ai_assist.ts`):
+      - `auto_discovery` to enrich references automatically.
+      - `mode`: `citations_only` (default) or `analysis_with_citations`.
+      - Optional `set_exploit_from_citations` to set `exploit_available=true` only when substantiated by credible PoCs (KEV, Exploit-DB/Metasploit, multiple GitHub PoCs). Otherwise remains Unknown.
+  - UI:
+    - `web/src/components/AiAssistantPanel.tsx` now includes Auto-discover toggle, Mode selector, and “Apply Exploit Available from citations” checkbox.
+    - `web/src/components/OssVulnTables.tsx` adds an Exploit pill per row and a Manage dialog for manual override and citations entry.
 
 ### Changed
 - Web Dockerfile: prefer `npm ci`; if lock is out-of-sync, fall back to `npm install` to avoid build failures in CI/containers.
 - `.gitignore`: avoid ignoring `web/src/lib/` by scoping `/lib/` and `/lib64/` to repo root.
 - `docker-compose.portal.yml`: clarified `seeder_langloc` purpose and ensured local build (no registry pull) for seeders.
 - `docker-compose.portal.yml`: mounted `terraform_reports` into web container for static serving.
+ - AI Assist defaults: Ollama default model is now `qwen2.5:3b` (fallback remains configurable via env `AI_ASSIST_DEFAULT_MODEL_OLLAMA`).
  - Initial seeding flow: remove OSS from `seeder_langloc` entrypoint (now runs only `scan_linecount.py` to persist LOC/files). CodeQL was not part of seeding and remains disabled during initial seed.
  - Projects page: removed 'Scan' link from page header.
  - Top header: renamed brand title from 'Security Portal' to 'GitHub Auditor'.
  - Terraform Findings UI: added severity totals chips and clickable severity toggles (Critical/High/Medium/Low/Unknown).
+ - Scans page: renamed section header from 'Run Shai-Hulud Scan' to 'Repo Scanner'.
+ - Scans page: removed the 'CodeQL Findings' panel.
+ - Projects page: removed the 'CodeQL Severity Totals' section.
+ - Project Detail UI enhancements:
+   - Added an `Ask AI` column to CI/CD workflow runs, Contributors, and Commit History tables (opens `AiAssistantPanel` with provider/model selection).
+   - Confirmed `Ask AI` and `Exploit` columns for CodeQL and Terraform findings; Exploit includes Manage dialog with citations and persists via `/api/exploitability`.
+   - Confirmed OSS Vulnerabilities tables retain `Ask AI` and `Exploit` integration.
+   - Increased nginx proxy timeouts for `/api/ai/` to accommodate longer first responses.
 
 ### Fixed
 - PostgREST permissions for AI tokens RPCs:

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { logger } from '../../config/logging.js';
 import { requireAuth, requireRole } from '../../auth/middleware.js';
 import { createScanSchema } from '../validators/scans.js';
 import { createScan, getScan, listRecentScans, updateScanStatus } from '../../db/repositories/scans.js';
@@ -27,13 +28,18 @@ scansRouter.get('/:id', requireAuth, async (req, res, next) => {
 scansRouter.post('/', requireAuth, async (req, res, next) => {
   try {
     const parsed = createScanSchema.parse(req.body);
+    if ((parsed.scope === 'repo') && (!parsed.repo || !String(parsed.repo).trim())) {
+      return res.status(422).json({ error: { code: 'validation_failed', message: 'repo is required when scope=repo' } });
+    }
     const created = await createScan({ project_id: parsed.project_id, profile: parsed.profile || null });
+    const effScope: 'org' | 'repo' = (parsed.scope as any) || (parsed.repo ? 'repo' : 'org');
+    logger.info({ scope: parsed.scope, repo: parsed.repo, effectiveScope: effScope }, 'Starting scan with scope');
     // Fire and forget the in-memory/real runner
     // eslint-disable-next-line no-void
     void scanRunner.start(created, {
       profile: parsed.profile || null,
       scanners: parsed.scanners,
-      scope: parsed.scope,
+      scope: effScope,
       repo: parsed.repo,
       codeql_languages: (parsed as any).codeql_languages,
       codeql_skip_autobuild: (parsed as any).codeql_skip_autobuild,

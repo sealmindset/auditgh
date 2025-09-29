@@ -53,3 +53,34 @@ export function xhrGetText(url: string): Promise<string> {
     xhr.send();
   });
 }
+
+// Abortable JSON GET using XHR; respects AbortSignal
+export function xhrGetJsonAbortable(url: string, signal?: AbortSignal): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState === 4) {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(xhr.responseText ? JSON.parse(xhr.responseText) : {}); } catch { resolve({}); }
+        } else {
+          // If aborted, surface a standard AbortError
+          if (xhr.status === 0 && (signal?.aborted || (xhr as any)._aborted)) {
+            reject(new DOMException('The operation was aborted.', 'AbortError'));
+          } else {
+            reject(new Error(`${xhr.status} ${xhr.responseText}`));
+          }
+        }
+      }
+    };
+    xhr.onerror = () => reject(new Error('network_error'));
+    if (signal) {
+      const onAbort = () => {
+        try { (xhr as any)._aborted = true; xhr.abort(); } catch {}
+      };
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    xhr.send();
+  });
+}

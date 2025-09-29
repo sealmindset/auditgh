@@ -16,6 +16,9 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { aiTokensRouter } from './api/routes/ai_tokens.js';
 import { secretLeaksRouter } from './api/routes/secret_leaks.js';
 import { terraformRouter } from './api/routes/terraform.js';
+import { aiAssistRouter } from './api/routes/ai_assist.js';
+import { exploitabilityRouter } from './api/routes/exploitability.js';
+import { binariesRouter } from './api/routes/binaries.js';
 
 export function createApp() {
   const app = express();
@@ -44,6 +47,9 @@ export function createApp() {
   app.use('/api/ai-tokens', aiTokensRouter);
   app.use('/api/secret-leaks', secretLeaksRouter);
   app.use('/api/terraform', terraformRouter);
+  app.use('/api/ai', aiAssistRouter);
+  app.use('/api/exploitability', exploitabilityRouter);
+  app.use('/api/binaries', binariesRouter);
 
   // Not found
   app.use((_: express.Request, res: express.Response) => {

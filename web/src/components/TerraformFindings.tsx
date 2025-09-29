@@ -1,14 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import DataTable, { ColumnDef } from './DataTable'
-import { xhrGetJson } from '../lib/xhr'
+import { xhrGetJson, xhrPostJson } from '../lib/xhr'
+import AiAssistantPanel from './AiAssistantPanel'
 
 // Cache parsed results by absolute path to avoid repeated fetch/parse
 const tfCache = new Map<string, any[]>()
 
-export default function TerraformFindings({ projectId, repoName }: { projectId: string; repoName: string | null }) {
+export default function TerraformFindings({ projectId, repoName, onRequestFullscreen, overlayActive = false }: { projectId: string; repoName: string | null; onRequestFullscreen?: (cfg: { id: string; name: string; fields?: Array<{key:string;label:string}>; columns?: ColumnDef<any>[]; rows: any[] }) => void, overlayActive?: boolean }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [rows, setRows] = useState<any[]>([])
+  const [aiCtx, setAiCtx] = useState<any | null>(null)
+  const [exploitMap, setExploitMap] = useState<Record<string, { status: boolean | null; evidence: any[] }>>({})
+  const [manageKey, setManageKey] = useState<string | null>(null)
+  const [manageStatus, setManageStatus] = useState<boolean>(false)
+  const [manageCitations, setManageCitations] = useState<string>('')
 
   const checkovPath = useMemo(() => (repoName ? `/terraform_reports/${repoName}/${repoName}_checkov.json` : null), [repoName])
   const trivyPath = useMemo(() => (repoName ? `/terraform_reports/${repoName}/${repoName}_trivy_fs.json` : null), [repoName])
@@ -82,6 +88,50 @@ export default function TerraformFindings({ projectId, repoName }: { projectId: 
     return () => { canceled = true }
   }, [projectId, repoName, checkovPath, trivyPath])
 
+  // Fetch exploit statuses for visible Terraform rule IDs
+  useEffect(() => {
+    async function run() {
+      try {
+        const ids = Array.from(new Set((rows||[]).map((r:any) => String(r.rule_id||'').trim()).filter(Boolean)))
+        if (!ids.length) { setExploitMap({}); return }
+        const url = `/api/exploitability?type=terraform_rule&keys=${encodeURIComponent(ids.join(','))}`
+        const data = await xhrGetJson(url)
+        const out: Record<string, { status: boolean | null; evidence: any[] }> = {}
+        for (const it of (data?.items||[])) out[String(it.key)] = { status: it.exploit_available===true ? true : (it.exploit_available===false ? false : null), evidence: it.evidence||[] }
+        setExploitMap(out)
+      } catch {
+        // ignore
+      }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    run()
+  }, [rows])
+
+  function openManage(ruleId: string) {
+    const key = String(ruleId||'')
+    setManageKey(key)
+    const st = exploitMap[key]?.status ?? null
+    setManageStatus(st === true)
+    const ev = exploitMap[key]?.evidence || []
+    setManageCitations((ev||[]).map((e:any)=>String(e.url||'')).filter(Boolean).join('\n'))
+  }
+
+  async function saveManage() {
+    if (!manageKey) return
+    const urls = manageCitations.split(/\s+/).map((s: string)=>s.trim()).filter(Boolean)
+    if (manageStatus && urls.length===0) return
+    try {
+      const evidence = urls.map((u: string) => ({ url: u }))
+      await xhrPostJson(`/api/exploitability`, { type: 'terraform_rule', key: manageKey, exploit_available: !!manageStatus, evidence })
+      const data = await xhrGetJson(`/api/exploitability?type=terraform_rule&key=${encodeURIComponent(manageKey)}`)
+      const it = (data?.items||[])[0]
+      if (it) setExploitMap((prev) => ({ ...prev, [String(it.key)]: { status: it.exploit_available===true ? true : (it.exploit_available===false ? false : null), evidence: it.evidence||[] } }))
+      setManageKey(null)
+    } catch {
+      // ignore
+    }
+  }
+
   // Severity chips filter (clickable) — mirrors OSS section behavior
   const [sevFilter, setSevFilter] = useState<Record<'Critical'|'High'|'Medium'|'Low'|'Unknown', boolean>>({
     Critical: true,
@@ -152,13 +202,41 @@ function dbRowToUi(r: any): any {
     ) },
     { key: 'tool', header: 'Tool', sortable: true, filter: { type: 'enum', enumValues: ['checkov','trivy'] } },
     { key: 'guideline_url', header: 'Guideline', sortable: false, render: (r) => r.guideline_url ? <a href={r.guideline_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Link</a> : <span className="text-slate-400">—</span> },
+    { key: 'exploit', header: 'Exploit', sortable: false, render: (r) => {
+      const k = String(r.rule_id||'')
+      const st = exploitMap[k]?.status ?? null
+      const cls = st===true ? 'bg-green-600 text-white' : st===false ? 'bg-slate-300 text-slate-900' : 'bg-slate-100 text-slate-800'
+      const label = st===true ? 'True' : st===false ? 'False' : 'Unknown'
+      return (
+        <button type="button" className={`text-xs px-2 py-0.5 rounded border ${cls}`} onClick={() => openManage(k)} title="Manage exploit status">
+          {label}
+        </button>
+      )
+    } },
+    { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (r) => (
+      <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setAiCtx(r)}>Ask AI</button>
+    ) },
   ]
 
   return (
     <div className="bg-white p-4 rounded shadow-sm">
       <div className="flex items-center justify-between mb-2">
         <h2 className="font-medium">Terraform Findings</h2>
-        <div className="text-xs text-slate-600">Checkov / Trivy</div>
+        <div className="text-xs text-slate-600 flex items-center gap-2">
+          <span>Checkov / Trivy</span>
+          <button
+            type="button"
+            className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+            onClick={() => onRequestFullscreen && onRequestFullscreen({
+              id: 'terraform',
+              name: 'Terraform Findings',
+              columns,
+              rows,
+            })}
+          >
+            Fullscreen
+          </button>
+        </div>
       </div>
       {(rows || []).length > 0 && (
         <div className="flex flex-wrap gap-2 items-center text-sm mb-2">
@@ -195,18 +273,50 @@ function dbRowToUi(r: any): any {
       ) : (rows || []).length === 0 ? (
         <div className="text-sm text-slate-600">No Terraform findings found.</div>
       ) : (
-        <DataTable
-          data={rows}
-          columns={columns}
-          defaultPageSize={10}
-          pageSizeOptions={[10,25,50]}
-          filterKeys={['rule_id','rule_name','severity','resource','file_path','tool']}
-          searchPlaceholder="Search Terraform findings…"
-          externalEnumFilters={externalEnumFilters}
-          onExternalEnumFiltersChange={handleExternalEnumFiltersChange}
-        />
+        <>
+          <DataTable
+            data={rows}
+            columns={columns}
+            defaultPageSize={10}
+            pageSizeOptions={[10,25,50]}
+            filterKeys={['rule_id','rule_name','severity','resource','file_path','tool']}
+            searchPlaceholder="Search Terraform findings…"
+            externalEnumFilters={externalEnumFilters}
+            onExternalEnumFiltersChange={handleExternalEnumFiltersChange}
+          />
+          {manageKey && !overlayActive && (
+            <div className="mt-3 border rounded p-3 bg-white">
+              <div className="text-sm font-medium mb-2">Manage Exploit Status — {manageKey}</div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm mb-2">
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={manageStatus} onChange={e=>setManageStatus(e.target.checked)} />
+                  <span>Exploit available</span>
+                </label>
+                <div className="md:col-span-2">
+                  <div className="text-xs text-slate-600 mb-1">Citations (one per line)</div>
+                  <textarea className="border rounded px-2 py-1 w-full min-h-[80px]" value={manageCitations} onChange={e=>setManageCitations(e.target.value)} placeholder="https://exploit-db.com/...\nhttps://github.com/owner/repo" />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button type="button" className="px-3 py-1 bg-blue-600 text-white rounded" onClick={saveManage}>Save</button>
+                <button type="button" className="px-3 py-1 bg-slate-200 rounded" onClick={()=>setManageKey(null)}>Cancel</button>
+              </div>
+            </div>
+          )}
+          {aiCtx && !overlayActive && (
+            <div className="mt-3">
+              <AiAssistantPanel
+                target="terraform"
+                projectId={projectId}
+                repoShort={repoName || undefined}
+                context={aiCtx}
+                onClose={() => setAiCtx(null)}
+              />
+            </div>
+          )}
+        </>
       )}
-    </div>
+      </div>
   )
 }
 

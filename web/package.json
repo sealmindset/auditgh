@@ -12,7 +12,15 @@
   },
   "dependencies": {
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "@nivo/core": "^0.85.0",
+    "@nivo/pie": "^0.85.0",
+    "@nivo/bar": "^0.85.0",
+    "@nivo/line": "^0.85.0",
+    "@nivo/treemap": "^0.85.0",
+    "@nivo/sunburst": "^0.85.0",
+    "@nivo/bullet": "^0.85.0",
+    "html-to-image": "^1.11.11"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

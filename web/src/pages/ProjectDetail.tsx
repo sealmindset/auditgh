@@ -1,8 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
-import { xhrGetJson, xhrPostJson } from '../lib/xhr'
+import { xhrGetJson, xhrPostJson, xhrGetText } from '../lib/xhr'
 import OssVulnTables from '../components/OssVulnTables'
 import TerraformFindings from '../components/TerraformFindings'
+import BinariesTable from '../components/BinariesTable'
 import DataTable, { ColumnDef } from '../components/DataTable'
+import AiAssistantPanel from '../components/AiAssistantPanel'
+import { askAI, type AskAIContext } from '../lib/ask-ai'
+import ExploitTypeGrid from '../components/ExploitTypeGrid'
+import ExploitHelpModal from '../components/ExploitHelpModal'
+import ChartHost from '../components/ChartKit/ChartHost'
+import { ProjectKPIAdapter } from '../components/ChartKit/adapters/ProjectKPIAdapter'
+import { ProjectLanguagesAdapter } from '../components/ChartKit/adapters/ProjectLanguagesAdapter'
+import { ProjectContributorsAdapter } from '../components/ChartKit/adapters/ProjectContributorsAdapter'
+import { ProjectCommitsActivityAdapter } from '../components/ChartKit/adapters/ProjectCommitsActivityAdapter'
 
 export type ApiProject = { id: number; uuid: string; name: string; repo_url: string | null; description: string | null; is_active: boolean; created_at: string; updated_at?: string; contributors_count?: number; last_commit_at?: string | null; primary_language?: string | null; total_loc?: number; stars?: number | null; forks?: number | null }
 
@@ -85,6 +95,55 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
   const [repoOptions, setRepoOptions] = useState<string[]>([])
   const [loadingRepos, setLoadingRepos] = useState(false)
   const [cqTotals, setCqTotals] = useState<{ total: number; critical: number; high: number; medium: number; low: number; info: number; unknown: number }>({ total: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0 })
+  const [cqAiCtx, setCqAiCtx] = useState<any | null>(null)
+  const [cqExploitMap, setCqExploitMap] = useState<Record<string, { status: boolean | null; evidence: any[] }>>({})
+  const [cqManageKey, setCqManageKey] = useState<string | null>(null)
+  const [cqManageStatus, setCqManageStatus] = useState<boolean>(false)
+  const [cqManageCitations, setCqManageCitations] = useState<string>('')
+
+  // Fetch exploit statuses for CodeQL rule IDs when findings change
+  useEffect(() => {
+    async function fetchCqExploit() {
+      try {
+        const ids = Array.from(new Set((cqFindings||[]).map((r: any) => String(r.rule_id||'').trim()).filter(Boolean)))
+        if (!ids.length) { setCqExploitMap({}); return }
+        const url = `${base}/api/exploitability?type=codeql_rule&keys=${encodeURIComponent(ids.join(','))}`
+        const data = await xhrGetJson(url)
+        const out: Record<string, { status: boolean | null; evidence: any[] }> = {}
+        for (const it of (data?.items||[])) out[String(it.key)] = { status: it.exploit_available===true ? true : (it.exploit_available===false ? false : null), evidence: it.evidence||[] }
+        setCqExploitMap(out)
+      } catch {
+        // ignore
+      }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    fetchCqExploit()
+  }, [base, cqFindings])
+
+  function openCqManage(ruleId: string) {
+    const key = String(ruleId||'')
+    setCqManageKey(key)
+    const st = cqExploitMap[key]?.status ?? null
+    setCqManageStatus(st === true)
+    const ev = cqExploitMap[key]?.evidence || []
+    setCqManageCitations((ev||[]).map((e:any)=>String(e.url||'')).filter(Boolean).join('\n'))
+  }
+
+  async function saveCqManage() {
+    if (!cqManageKey) return
+    const urls = cqManageCitations.split(/\s+/).map((s: string)=>s.trim()).filter(Boolean)
+    if (cqManageStatus && urls.length===0) return
+    try {
+      const evidence = urls.map((u: string) => ({ url: u }))
+      await xhrPostJson(`${base}/api/exploitability`, { type: 'codeql_rule', key: cqManageKey, exploit_available: !!cqManageStatus, evidence })
+      const data = await xhrGetJson(`${base}/api/exploitability?type=codeql_rule&key=${encodeURIComponent(cqManageKey)}`)
+      const it = (data?.items||[])[0]
+      if (it) setCqExploitMap((prev) => ({ ...prev, [String(it.key)]: { status: it.exploit_available===true ? true : (it.exploit_available===false ? false : null), evidence: it.evidence||[] } }))
+      setCqManageKey(null)
+    } catch {
+      // ignore
+    }
+  }
 
   // Combined Secrets (GenAI + Generic)
   const [aiTokens, setAiTokens] = useState<any[]>([])
@@ -98,6 +157,213 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
   const [ciRuns, setCiRuns] = useState<any[]>([])
   const [ciLoading, setCiLoading] = useState(false)
   const [ciError, setCiError] = useState<string|null>(null)
+  const [secretAiCtx, setSecretAiCtx] = useState<any | null>(null)
+  const [ciAiCtx, setCiAiCtx] = useState<any | null>(null)
+  const [contribAiCtx, setContribAiCtx] = useState<any | null>(null)
+  const [commitAiCtx, setCommitAiCtx] = useState<any | null>(null)
+  // Project Overview Exploit pill (aggregated across repo findings)
+  const [overviewExploit, setOverviewExploit] = useState<boolean | null>(null)
+  const [overviewExploitLoading, setOverviewExploitLoading] = useState<boolean>(false)
+  const [exploitHelpOpen, setExploitHelpOpen] = useState<boolean>(false)
+
+  // Ask AI drawer and table fullscreen overlay state
+  const [askAiOpen, setAskAiOpen] = useState(false)
+  const [askAiQuestion, setAskAiQuestion] = useState('')
+  const [askAiResponse, setAskAiResponse] = useState<string>('')
+  const [askAiBusy, setAskAiBusy] = useState(false)
+  const [selection, setSelection] = useState<{ tableId: string; rowIndexes: number[] } | null>(null)
+
+  const [fsOpen, setFsOpen] = useState(false)
+  const [fsDensity, setFsDensity] = useState<'comfortable' | 'compact'>('comfortable')
+  const [fsConfig, setFsConfig] = useState<{ id: string; name: string; fields?: Array<{key:string;label:string}>; columns?: ColumnDef<any>[]; rows: any[] } | null>(null)
+  const [fsAiCtx, setFsAiCtx] = useState<any | null>(null)
+  const [fsExploitType, setFsExploitType] = useState<'codeql_rule'|'terraform_rule'|'cve'|'ghsa'|null>(null)
+  const [fsExploitMap, setFsExploitMap] = useState<Record<string, { status: boolean | null; evidence: any[] }>>({})
+  const [fsManageKey, setFsManageKey] = useState<string | null>(null)
+  const [fsManageStatus, setFsManageStatus] = useState<boolean>(false)
+  const [fsManageCitations, setFsManageCitations] = useState<string>('')
+  const fsEffectiveFields = useMemo(() => {
+    if (!fsConfig) return [] as Array<{key:string;label:string}>
+    if (fsConfig.columns && fsConfig.columns.length > 0) {
+      return fsConfig.columns.map(c => ({ key: String(c.key), label: c.header }))
+    }
+    return fsConfig.fields || []
+  }, [fsConfig])
+
+  const overlayColumns = useMemo<ColumnDef<any>[]>(() => {
+    if (!fsConfig) return []
+    if (fsConfig.columns && fsConfig.columns.length > 0) {
+      return fsConfig.columns.map((c) => {
+        if (String(c.key) === 'ask_ai') {
+          return {
+            ...c,
+            render: (row: any) => (
+              <button
+                type="button"
+                className="text-xs px-2 py-0.5 border rounded"
+                onClick={() => setFsAiCtx(row)}
+              >
+                Ask AI
+              </button>
+            ),
+          } as ColumnDef<any>
+        }
+        if (String(c.key) === 'exploit') {
+          return {
+            ...c,
+            render: (row: any) => {
+              const key = fsConfig.id === 'oss' ? String((row.vuln_id || '')).toUpperCase() : String(row.rule_id || '')
+              // Determine status label from overlay map or existing maps (for codeql)
+              let st: boolean | null = null
+              if (fsExploitMap && Object.prototype.hasOwnProperty.call(fsExploitMap, key)) {
+                st = fsExploitMap[key]?.status ?? null
+              } else if (fsConfig.id === 'codeql') {
+                const m = (cqExploitMap || {})[key]
+                st = m ? (m.status === true ? true : (m.status === false ? false : null)) : null
+              }
+              const cls = st===true ? 'bg-green-600 text-white' : st===false ? 'bg-slate-300 text-slate-900' : 'bg-slate-100 text-slate-800'
+              const label = st===true ? 'True' : st===false ? 'False' : 'Unknown'
+              return (
+                <button
+                  type="button"
+                  className={`text-xs px-2 py-0.5 rounded border ${cls}`}
+                  title="Manage exploit status"
+                  onClick={() => openFsManage(key)}
+                >
+                  {label}
+                </button>
+              )
+            }
+          } as ColumnDef<any>
+        }
+        return c
+      })
+    }
+    // Fallback: generate simple text columns from fields
+    return fsEffectiveFields.map(f => ({ key: f.key, header: f.label, sortable: true, filter: { type: 'text' } }))
+  }, [fsConfig, fsEffectiveFields, fsExploitMap])
+
+  // Phase 2: Top controls – search and show-empty styling
+  const [topQuery, setTopQuery] = useState('')
+  const [showEmpty, setShowEmpty] = useState(true)
+  const [mainDensity, setMainDensity] = useState<'comfortable'|'compact'>('comfortable')
+  const sectionTargets = useMemo(() => (
+    [
+      { id: 'overview', label: 'Overview' },
+      { id: 'languages', label: 'Languages Breakdown' },
+      { id: 'repo', label: 'Repo' },
+      { id: 'contributors-card', label: 'Contributors' },
+      { id: 'commits-card', label: 'Commit History' },
+      { id: 'vulnerabilities', label: 'Vulnerabilities' },
+      { id: 'build', label: 'Build' },
+      { id: 'cicd-card', label: 'CI/CD' },
+      { id: 'findings', label: 'Findings' },
+      { id: 'secrets-card', label: 'Published Secrets' },
+      { id: 'codeql-card', label: 'CodeQL Findings' },
+    ]
+  ), [])
+  function jumpToQuery(q: string) {
+    const qq = (q || '').toLowerCase().trim()
+    if (!qq) return
+    const target = sectionTargets.find(t => t.label.toLowerCase().includes(qq))
+    if (!target) return
+    const el = document.getElementById(target.id)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+  function cardMuted(isEmpty: boolean): string {
+    return (!showEmpty && isEmpty) ? 'opacity-70 bg-slate-50 border border-dashed' : ''
+  }
+
+  // Reusable column builders for fullscreen parity
+  function contributorColumns(): ColumnDef<any>[] {
+    return [
+      { key: 'login', header: 'Login', sortable: true, filter: { type: 'text', getValue: (c) => String(c.display_name || c.login || '') }, render: (c) => (
+        <span className="font-medium">{c.display_name || c.login}<span className="text-slate-500">{c.display_name ? ` (@${c.login})` : ''}</span></span>
+      ) },
+      { key: 'email', header: 'Email', sortable: true, filter: { type: 'text', getValue: (c) => String(c.email || '') } },
+      { key: 'last_commit_at', header: 'Last Commit', sortable: true, render: (c) => c.last_commit_at ? new Date(c.last_commit_at).toLocaleString() : '—' },
+      { key: 'commits_count', header: 'Commits', sortable: true, render: (c) => <span className="font-semibold">{c.commits_count ?? 0}</span> },
+      { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (c) => (
+        <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setContribAiCtx(c)}>Ask AI</button>
+      ) },
+    ]
+  }
+
+  function cicdColumns(): ColumnDef<any>[] {
+    return [
+      { key: 'workflow_name', header: 'Workflow', sortable: true, filter: { type: 'text', getValue: (r) => String(r.workflow_name || r.name || '') } },
+      { key: 'event', header: 'Event', sortable: true, filter: { type: 'enum' } },
+      { key: 'status', header: 'Status', sortable: true, filter: { type: 'enum', enumValues: ['queued','in_progress','completed'] } },
+      { key: 'conclusion', header: 'Conclusion', sortable: true, filter: { type: 'enum', enumValues: ['success','failure','cancelled','skipped','neutral','timed_out','action_required','stale'] } },
+      { key: 'branch', header: 'Branch', sortable: true, filter: { type: 'text', getValue: (r) => String(r.branch || '') } },
+      { key: 'run_number', header: 'Run #', sortable: true, widthClass: 'w-20' },
+      { key: 'actor_login', header: 'Actor', sortable: true, filter: { type: 'text', getValue: (r) => String(r.actor_login || '') } },
+      { key: 'commit_sha', header: 'Commit', sortable: true, filter: { type: 'text', getValue: (r) => String(r.commit_sha || '') }, render: (r) => r.commit_sha ? r.commit_sha.substring(0,7) : '' },
+      { key: 'created_at', header: 'Created', sortable: true, render: (r) => r.created_at ? new Date(r.created_at).toLocaleString() : '' },
+      { key: 'html_url', header: 'Link', sortable: false, render: (r) => r.html_url ? <a href={r.html_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View</a> : <span className="text-slate-400">—</span> },
+      { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (r) => (
+        <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setCiAiCtx(r)}>Ask AI</button>
+      ) },
+    ]
+  }
+
+  function codeqlColumns(): ColumnDef<any>[] {
+    return [
+      {
+        key: 'severity', header: 'Severity', sortable: true,
+        filter: { type: 'enum', enumValues: ['critical','high','medium','low','info','unknown'], getValue: (it) => String(it.severity || 'unknown').toLowerCase() },
+        render: (it) => (
+          <span className={`text-xs px-2 py-0.5 rounded ${
+            (it.severity||'').toLowerCase()==='critical' ? 'bg-red-600 text-white' :
+            (it.severity||'').toLowerCase()==='high' ? 'bg-red-500 text-white' :
+            (it.severity||'').toLowerCase()==='medium' ? 'bg-amber-400 text-black' :
+            (it.severity||'').toLowerCase()==='low' ? 'bg-yellow-200 text-black' :
+            (it.severity||'').toLowerCase()==='info' ? 'bg-blue-200 text-black' : 'bg-slate-200 text-black'}`}>{(it.severity||'unknown').toUpperCase()}</span>
+        )
+      },
+      { key: 'rule_id', header: 'Rule', sortable: true, filter: { type: 'text', getValue: (it) => String(it.rule_id || '') } },
+      { key: 'file', header: 'File', sortable: true, filter: { type: 'text', getValue: (it) => String(it.file || '') } },
+      { key: 'line', header: 'Line', sortable: true },
+      { key: 'message', header: 'Message', sortable: false, filter: { type: 'text', getValue: (it) => String(it.message || '') }, render: (it) => (<span title={it.message || ''}>{it.message || ''}</span>) },
+      { key: 'help_uri', header: 'Docs', sortable: false, render: (it) => (it.help_uri ? <a className="text-blue-600 underline" href={it.help_uri} target="_blank" rel="noreferrer">Docs</a> : <span className="text-slate-400">—</span>) },
+      { key: 'exploit', header: 'Exploit', sortable: false, render: (it) => {
+        const k = String(it.rule_id||'')
+        const st = cqExploitMap[k]?.status ?? null
+        const cls = st===true ? 'bg-green-600 text-white' : st===false ? 'bg-slate-300 text-slate-900' : 'bg-slate-100 text-slate-800'
+        const label = st===true ? 'True' : st===false ? 'False' : 'Unknown'
+        return (
+          <button type="button" className={`text-xs px-2 py-0.5 rounded border ${cls}`} onClick={() => openCqManage(k)} title="Manage exploit status">
+            {label}
+          </button>
+        )
+      } },
+      { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (it) => (
+        <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setCqAiCtx(it)}>Ask AI</button>
+      ) },
+    ]
+  }
+
+  function commitColumns(): ColumnDef<any>[] {
+    return [
+      { key: 'message', header: 'Message', sortable: true, filter: { type: 'text', getValue: (c) => String(c.message || '') }, render: (c) => <span className="truncate inline-block max-w-[40rem]" title={c.message || ''}>{c.message || '(no message)'}</span> },
+      { key: 'committed_at', header: 'Committed At', sortable: true, render: (c) => new Date(c.committed_at).toLocaleString() },
+      { key: 'author_login', header: 'Author', sortable: true, filter: { type: 'text', getValue: (c) => String(c.author_login || '') } },
+      { key: 'author_email', header: 'Email', sortable: true, filter: { type: 'text', getValue: (c) => String(c.author_email || '') } },
+      { key: 'sha', header: 'SHA', sortable: true, filter: { type: 'text', getValue: (c) => String(c.sha || '') }, render: (c) => c.sha?.substring(0,7) || '' },
+      { key: 'url', header: 'Link', sortable: false, render: (c) => c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View</a> : <span className="text-slate-400">No link</span> },
+      { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (c) => (
+        <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setCommitAiCtx(c)}>Ask AI</button>
+      ) },
+    ]
+  }
+
+  // Phase 3: Group collapse/expand
+  const [collapsed, setCollapsed] = useState<Record<'repo'|'vulnerabilities'|'build'|'findings', boolean>>({} as any)
+  function toggleGroup(key: 'repo'|'vulnerabilities'|'build'|'findings') {
+    setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+  function expandAllGroups() { setCollapsed({} as any) }
+  function collapseAllGroups() { setCollapsed({ repo: true, vulnerabilities: true, build: true, findings: true }) }
 
   // Fetch auth to determine admin role for masking/value visibility
   useEffect(() => {
@@ -466,6 +732,101 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item?.uuid, cqRepo, repoName, cqSev, cqSort, cqDir, cqPageSize])
 
+  // Compute Project Overview Exploit pill based on any True status among CodeQL and Terraform findings for this repo
+  useEffect(() => {
+    async function computeExploitPill() {
+      try {
+        if (!item?.uuid) { setOverviewExploit(null); return }
+        const repoSel = (cqRepo || repoName || '').trim()
+        if (!repoSel) { setOverviewExploit(null); return }
+        setOverviewExploitLoading(true)
+        // 1) CodeQL: check any rule_id status True among loaded findings
+        const cqIds = Array.from(new Set((cqFindings || []).map((r: any) => String(r.rule_id || '').trim()).filter(Boolean)))
+        if (cqIds.length) {
+          try {
+            const data = await xhrGetJson(`${base}/api/exploitability?type=codeql_rule&keys=${encodeURIComponent(cqIds.join(','))}`)
+            const items = (data?.items || [])
+            if (items.some((it: any) => it.exploit_available === true)) { setOverviewExploit(true); return }
+          } catch { /* ignore and continue */ }
+        }
+        // 2) Terraform: fetch rule_ids for this project/repo from PostgREST then check statuses
+        let tfIds: string[] = []
+        try {
+          const sel = 'rule_id'
+          let url = `${base}/db/terraform_findings?select=${encodeURIComponent(sel)}&project_id=eq.${encodeURIComponent(item.uuid)}&order=created_at.desc&limit=200`
+          if (repoSel) url += `&repo_short=eq.${encodeURIComponent(repoSel)}`
+          const rows = await xhrGetJson(url)
+          tfIds = Array.from(new Set((rows || []).map((r: any) => String(r.rule_id || '').trim()).filter(Boolean)))
+        } catch { /* ignore */ }
+        if (tfIds.length) {
+          try {
+            const data2 = await xhrGetJson(`${base}/api/exploitability?type=terraform_rule&keys=${encodeURIComponent(tfIds.join(','))}`)
+            const items2 = (data2?.items || [])
+            if (items2.some((it: any) => it.exploit_available === true)) { setOverviewExploit(true); return }
+          } catch { /* ignore */ }
+        }
+        // 3) OSS: parse repo markdown to collect vuln IDs (CVE/GHSA) and check exploitability
+        let ossCves: string[] = []
+        let ossGhsas: string[] = []
+        try {
+          if (repoName) {
+            const path = `/oss_reports/${repoName}/${repoName}_oss.md`
+            const md = await xhrGetText(path)
+            const ids = (() => {
+              const lines = (md || '').split(/\r?\n/)
+              let i = 0
+              // find "## Vulnerabilities Found"
+              while (i < lines.length && !/^##\s*Vulnerabilities Found/i.test(lines[i])) i++
+              if (i >= lines.length) return [] as string[]
+              // seek table header row starting with '|'
+              while (i < lines.length && !/^\|/.test(lines[i])) i++
+              if (i >= lines.length) return [] as string[]
+              const header = lines[i++]
+              if (i >= lines.length) return [] as string[]
+              const sep = lines[i++]
+              if (!/^\|\s*-/.test(sep)) return [] as string[]
+              const headers = header.replace(/^\|/, '').replace(/\|$/, '').split('|').map(s=>s.trim())
+              const vidx = headers.findIndex(h => /vulnerability id/i.test(h))
+              if (vidx < 0) return [] as string[]
+              const out: string[] = []
+              while (i < lines.length && /^\|/.test(lines[i])) {
+                const row = lines[i]
+                const cells = row.replace(/^\|/, '').replace(/\|$/, '').split('|').map(s=>s.trim())
+                if (vidx < cells.length) out.push(cells[vidx])
+                i++
+              }
+              return out
+            })()
+            const norm = Array.from(new Set(ids.map(s => String(s || '').toUpperCase()).filter(Boolean)))
+            ossCves = norm.filter(s => /^CVE-\d{4}-\d{4,}$/.test(s))
+            ossGhsas = norm.filter(s => /^GHSA-/.test(s))
+          }
+        } catch { /* ignore */ }
+        if (ossCves.length) {
+          try {
+            const d = await xhrGetJson(`${base}/api/exploitability?type=cve&keys=${encodeURIComponent(ossCves.join(','))}`)
+            const items = (d?.items || [])
+            if (items.some((it:any)=>it.exploit_available===true)) { setOverviewExploit(true); return }
+          } catch { /* ignore */ }
+        }
+        if (ossGhsas.length) {
+          try {
+            const d = await xhrGetJson(`${base}/api/exploitability?type=ghsa&keys=${encodeURIComponent(ossGhsas.join(','))}`)
+            const items = (d?.items || [])
+            if (items.some((it:any)=>it.exploit_available===true)) { setOverviewExploit(true); return }
+          } catch { /* ignore */ }
+        }
+        // If we had any IDs but none True, mark False; else Unknown
+        if ((cqIds && cqIds.length) || (tfIds && tfIds.length) || (ossCves.length + ossGhsas.length > 0)) setOverviewExploit(false)
+        else setOverviewExploit(null)
+      } finally {
+        setOverviewExploitLoading(false)
+      }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    computeExploitPill()
+  }, [base, item?.uuid, cqFindings, cqRepo, repoName])
+
   if (loading) return <div className="p-4">Loading…</div>
   if (error) return (
     <div className="p-4">
@@ -475,8 +836,291 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
   )
   if (!item || !form) return null
 
+  // Build Ask AI context from currently visible tables (after client-side filtering)
+  function buildAskAiContext(): AskAIContext {
+    const overview = item ? {
+      id: item.uuid, name: item.name, repo_url: item.repo_url, description: item.description,
+      primary_language: item.primary_language, total_loc: item.total_loc, stars: item.stars, forks: item.forks,
+      contributors_count: item.contributors_count, last_commit_at: item.last_commit_at,
+    } : undefined
+    const tables: AskAIContext['visibleTables'] = []
+    // Languages table
+    if (langs && langs.length >= 0) {
+      tables.push({
+        id: 'languages',
+        name: 'Languages Breakdown',
+        fields: [
+          {key:'language',label:'Language'},
+          {key:'loc',label:'LOC'},
+          {key:'files',label:'Files'},
+          {key:'bytes',label:'Bytes'},
+          {key:'is_primary',label:'Primary'},
+        ],
+        rows: langs.map(l => ({ language: l.language, loc: l.loc ?? null, files: l.files ?? null, bytes: l.bytes, is_primary: l.is_primary })),
+      })
+    }
+    // CodeQL Findings (already filtered client-side)
+    if (cqFindings) {
+      tables.push({
+        id: 'codeql', name: 'CodeQL Findings',
+        fields: [
+          {key:'severity',label:'Severity'},
+          {key:'rule_id',label:'Rule'},
+          {key:'file',label:'File'},
+          {key:'line',label:'Line'},
+          {key:'message',label:'Message'},
+        ],
+        rows: cqFindings,
+      })
+    }
+    // CI/CD
+    if (ciRuns) {
+      tables.push({
+        id: 'cicd', name: 'CI/CD — GitHub Actions',
+        fields: [
+          {key:'workflow_name',label:'Workflow'},
+          {key:'event',label:'Event'},
+          {key:'status',label:'Status'},
+          {key:'conclusion',label:'Conclusion'},
+        ],
+        rows: ciRuns,
+      })
+    }
+    // Contributors
+    if (contributors) {
+      tables.push({
+        id: 'contributors', name: 'Contributors',
+        fields: [
+          {key:'login',label:'Login'},
+          {key:'email',label:'Email'},
+          {key:'last_commit_at',label:'Last Commit'},
+          {key:'commits_count',label:'Commits'},
+        ],
+        rows: contributors,
+      })
+    }
+    // Commits
+    if (commits) {
+      tables.push({
+        id: 'commits', name: 'Commit History',
+        fields: [
+          {key:'message',label:'Message'},
+          {key:'author_login',label:'Author'},
+          {key:'author_email',label:'Email'},
+          {key:'committed_at',label:'Committed At'},
+          {key:'sha',label:'SHA'},
+        ],
+        rows: commits,
+      })
+    }
+    // Secrets (combined)
+    if (combinedSecrets) {
+      tables.push({
+        id: 'secrets', name: 'Published Secrets (GenAI + Generic)',
+        fields: [
+          {key:'type',label:'Type'},
+          {key:'file_path',label:'Path & File'},
+          {key:'validation_status',label:'Validated'},
+          {key:'value',label:'Value'},
+          {key:'created_at',label:'Detected'},
+        ],
+        rows: combinedSecrets,
+      })
+    }
+    return { overview, visibleTables: tables, selection }
+  }
+
+  function serializeCsvFromFields(fields: Array<{key:string;label:string}>, rows: any[]): string {
+    const headers = fields.map(f => f.label)
+    const out = [headers.join(',')]
+    for (const r of rows) {
+      const vals = fields.map(f => {
+        const raw = (r as any)[f.key]
+        const s = raw == null ? '' : String(raw)
+        return '"' + s.replaceAll('"', '""') + '"'
+      })
+      out.push(vals.join(','))
+    }
+    return out.join('\n')
+  }
+
+  async function onAskAiRun() {
+    const ctx = buildAskAiContext()
+    setAskAiResponse('')
+    setAskAiBusy(true)
+    try {
+      const answer = await askAI(askAiQuestion, ctx)
+      // Simulate streaming output by chunking newlines
+      const chunks = answer.split(/\n/)
+      let acc = ''
+      for (const ch of chunks) {
+        acc += (acc ? '\n' : '') + ch
+        setAskAiResponse(acc)
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise(r => setTimeout(r, 15))
+      }
+    } catch (e: any) {
+      setAskAiResponse(String(e?.message || e || 'Ask AI failed'))
+    } finally {
+      setAskAiBusy(false)
+    }
+  }
+
+  async function openFullscreenTable(cfg: { id: string; name: string; fields?: Array<{key:string;label:string}>; columns?: ColumnDef<any>[]; rows: any[] }) {
+    setFsConfig(cfg)
+    setFsDensity('comfortable')
+    setFsAiCtx(null)
+    setFsManageKey(null)
+    // Set exploit type and prefetch statuses for overlay
+    const t: 'codeql_rule'|'terraform_rule'|'cve'|'ghsa'|null = cfg.id === 'codeql' ? 'codeql_rule' : (cfg.id === 'terraform' ? 'terraform_rule' : (cfg.id === 'oss' ? null : null))
+    setFsExploitType(t)
+    if (t === 'terraform_rule') {
+      try {
+        const ids = Array.from(new Set((cfg.rows||[]).map((r:any)=>String(r.rule_id||'').trim()).filter(Boolean)))
+        if (ids.length) {
+          const data = await xhrGetJson(`${base}/api/exploitability?type=terraform_rule&keys=${encodeURIComponent(ids.join(','))}`)
+          const out: Record<string, { status: boolean | null; evidence: any[] }> = {}
+          for (const it of (data?.items||[])) out[String(it.key)] = { status: it.exploit_available===true ? true : (it.exploit_available===false ? false : null), evidence: it.evidence||[] }
+          setFsExploitMap(out)
+        } else {
+          setFsExploitMap({})
+        }
+      } catch {
+        setFsExploitMap({})
+      }
+    } else if (t === 'codeql_rule') {
+      // Seed overlay map from existing CodeQL map for quick status display
+      const ids = Array.from(new Set((cfg.rows||[]).map((r:any)=>String(r.rule_id||'').trim()).filter(Boolean)))
+      const out: Record<string, { status: boolean | null; evidence: any[] }> = {}
+      for (const id of ids) {
+        const m = cqExploitMap[id]
+        if (m) out[id] = { status: m.status===true ? true : (m.status===false ? false : null), evidence: m.evidence||[] }
+      }
+      setFsExploitMap(out)
+    } else if (cfg.id === 'oss') {
+      try {
+        const ids = Array.from(new Set((cfg.rows||[]).map((r:any)=>String(r.vuln_id||'').toUpperCase()).filter(Boolean)))
+        const cves = ids.filter((s:string)=>/^CVE-\d{4}-\d{4,}$/.test(s))
+        const ghsas = ids.filter((s:string)=>/^GHSA-/.test(s))
+        const out: Record<string, { status: boolean | null; evidence: any[] }> = {}
+        if (cves.length) {
+          const data = await xhrGetJson(`${base}/api/exploitability?type=cve&keys=${encodeURIComponent(cves.join(','))}`)
+          for (const it of (data?.items||[])) out[String(it.key).toUpperCase()] = { status: it.exploit_available===true ? true : (it.exploit_available===false ? false : null), evidence: it.evidence||[] }
+        }
+        if (ghsas.length) {
+          const data2 = await xhrGetJson(`${base}/api/exploitability?type=ghsa&keys=${encodeURIComponent(ghsas.join(','))}`)
+          for (const it of (data2?.items||[])) out[String(it.key).toUpperCase()] = { status: it.exploit_available===true ? true : (it.exploit_available===false ? false : null), evidence: it.evidence||[] }
+        }
+        setFsExploitMap(out)
+      } catch {
+        setFsExploitMap({})
+      }
+    } else {
+      setFsExploitMap({})
+    }
+    setFsOpen(true)
+  }
+
+  function openFsManage(ruleId: string) {
+    const key = String(ruleId||'')
+    setFsManageKey(key)
+    // Determine type and initial state
+    let t = fsExploitType || (fsConfig?.id === 'codeql' ? 'codeql_rule' : (fsConfig?.id === 'terraform' ? 'terraform_rule' : null))
+    if (!t && fsConfig?.id === 'oss') {
+      const upper = key.toUpperCase()
+      t = (/^CVE-\d{4}-\d{4,}$/.test(upper) ? 'cve' : 'ghsa') as any
+    }
+    setFsExploitType(t as any)
+    let st: boolean | null = null
+    let evidence: any[] = []
+    if (t === 'codeql_rule') {
+      const m = fsExploitMap[key] || cqExploitMap[key]
+      st = m ? (m.status===true ? true : (m.status===false ? false : null)) : null
+      evidence = m?.evidence || []
+    } else if (t === 'terraform_rule') {
+      const m = fsExploitMap[key]
+      st = m ? (m.status===true ? true : (m.status===false ? false : null)) : null
+      evidence = m?.evidence || []
+    } else if (t === 'cve' || t === 'ghsa') {
+      const m = fsExploitMap[key.toUpperCase()]
+      st = m ? (m.status===true ? true : (m.status===false ? false : null)) : null
+      evidence = m?.evidence || []
+    }
+    setFsManageStatus(st === true)
+    setFsManageCitations((evidence||[]).map((e:any)=>String(e.url||'')).filter(Boolean).join('\n'))
+  }
+
+  async function saveFsManage() {
+    if (!fsManageKey || !fsExploitType) return
+    const urls = fsManageCitations.split(/\s+/).map((s: string)=>s.trim()).filter(Boolean)
+    if (fsManageStatus && urls.length===0) return
+    try {
+      const evidence = urls.map((u: string) => ({ url: u }))
+      await xhrPostJson(`${base}/api/exploitability`, { type: fsExploitType, key: fsManageKey, exploit_available: !!fsManageStatus, evidence })
+      const data = await xhrGetJson(`${base}/api/exploitability?type=${encodeURIComponent(fsExploitType)}&key=${encodeURIComponent(fsManageKey)}`)
+      const it = (data?.items||[])[0]
+      if (it) {
+        setFsExploitMap((prev) => ({ ...prev, [String(it.key)]: { status: it.exploit_available===true ? true : (it.exploit_available===false ? false : null), evidence: it.evidence||[] } }))
+        if (fsExploitType === 'codeql_rule') {
+          // keep in sync with main CodeQL map
+          setCqExploitMap((prev) => ({ ...prev, [String(it.key)]: { status: it.exploit_available===true ? true : (it.exploit_available===false ? false : null), evidence: it.evidence||[] } }))
+        }
+      }
+      setFsManageKey(null)
+    } catch {
+      // ignore
+    }
+  }
+
+  // Keep underlying logic for Add/Delete but do not expose UI
+  function addFsRow() {
+    if (!fsConfig) return
+    const empty: any = {}
+    for (const f of fsEffectiveFields) empty[f.key] = ''
+    setFsConfig({ ...fsConfig, rows: [...fsConfig.rows, empty] })
+  }
+  function removeFsRow(index: number) {
+    if (!fsConfig) return
+    const rows = fsConfig.rows.slice(0, index).concat(fsConfig.rows.slice(index + 1))
+    setFsConfig({ ...fsConfig, rows })
+  }
+
+  function downloadCsv(name: string, csv: string) {
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${name}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  // Smoke tests exposed on window for manual invocation
+  ;(window as any).runProjectDetailSmokeTests = function runSmokeTests() {
+    try {
+      // CSV test
+      const f = [{key:'a',label:'A'},{key:'b',label:'B'}]
+      const r = [{a:'x,y',b:'"quoted"'},{a:null,b:undefined},{a:'multi\nline',b:'ok'}]
+      const csv = serializeCsvFromFields(f, r)
+      if (!csv.includes('"x,y"') || !csv.includes('""quoted""') || !csv.includes('multi\nline')) throw new Error('CSV serialization failed')
+      // Fullscreen mount test
+      openFullscreenTable({ id: 'test', name: 'Test', fields: f as any, rows: r })
+      setTimeout(() => setFsOpen(false), 50)
+      // Ask AI context test
+      const ctx = buildAskAiContext()
+      if (!ctx || !Array.isArray(ctx.visibleTables)) throw new Error('AskAIContext invalid')
+      // eslint-disable-next-line no-console
+      console.log('runProjectDetailSmokeTests passed')
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('runProjectDetailSmokeTests failed:', e)
+    }
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="auditor-dashboard min-h-screen bg-gradient-to-b from-slate-100 to-slate-200 text-slate-900">
       <header className="flex items-center justify-between p-4 border-b bg-white sticky top-0">
         <nav className="text-sm"><a href="/projects" className="text-blue-600 hover:underline">Projects</a> /</nav>
         <div className="flex items-center gap-2">
@@ -484,8 +1128,10 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
           <button onClick={save} disabled={saving} className="bg-blue-600 text-white px-3 py-1 rounded disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
         </div>
       </header>
-      <main className="p-4 space-y-4">
-        <div className="bg-white p-4 rounded shadow-sm">
+      <main className="p-4">
+        <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-[1fr_18rem] gap-4">
+          <div className={`space-y-4 ${mainDensity==='compact' ? 'text-xs' : 'text-sm'}`}>
+            <div id="overview" className="bg-white p-4 rounded shadow-sm">
           <h2 className="font-medium mb-3">Project Overview</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <label className="text-sm">
@@ -520,6 +1166,24 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
                 {typeof item?.total_loc === 'number' ? item.total_loc.toLocaleString() : '—'}
               </div>
             </div>
+            <div className="text-sm md:col-span-1">
+              <div className="mb-1 flex items-center gap-2">Exploit
+                <button type="button" className="inline-flex items-center justify-center w-5 h-5 text-xs border rounded bg-slate-100 hover:bg-slate-200" title="Exploit types help" onClick={() => setExploitHelpOpen(true)}>?</button>
+              </div>
+              {(() => {
+                const st = overviewExploit
+                const cls = st===true ? 'bg-green-600 text-white' : st===false ? 'bg-slate-300 text-slate-900' : 'bg-slate-100 text-slate-800'
+                const label = st===true ? 'True' : st===false ? 'False' : (overviewExploitLoading ? 'Checking…' : 'Unknown')
+                return (
+                  <span className={`inline-block text-xs px-2 py-0.5 rounded border ${cls}`} title="Any finding in this repo marked as exploit available">
+                    {label}
+                  </span>
+                )
+              })()}
+              {item?.uuid ? (
+                <ExploitTypeGrid projectId={item.uuid} />
+              ) : null}
+            </div>
             {(typeof item?.contributors_count !== 'undefined' || item?.last_commit_at || typeof item?.stars === 'number' || typeof item?.forks === 'number') ? (
               <div className="text-sm text-slate-600 md:col-span-2">
                 <span className="mr-4">Contributors: <strong>{item?.contributors_count ?? 0}</strong></span>
@@ -530,17 +1194,341 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
               </div>
             ) : null}
           </div>
+            </div>
+
+        {/* Top controls (search + show-empty visual styling) */}
+        <div className="bg-white p-3 rounded shadow-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
+              <input
+                className="border rounded px-2 py-1 w-64"
+                placeholder="Search sections (e.g., Secrets, CodeQL, CI/CD...)"
+                value={topQuery}
+                onChange={e => setTopQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') jumpToQuery(topQuery) }}
+              />
+              <button className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200" onClick={() => jumpToQuery(topQuery)}>Go</button>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={showEmpty} onChange={e=>setShowEmpty(e.target.checked)} />
+              <span>Show empty (normal style)</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <span>Density</span>
+              <select className="border rounded px-2 py-1" value={mainDensity} onChange={e=>setMainDensity(e.target.value as any)}>
+                <option value="comfortable">Comfortable</option>
+                <option value="compact">Compact</option>
+              </select>
+            </label>
+            <div className="ml-auto flex items-center gap-2">
+              <button className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200" onClick={collapseAllGroups}>Collapse All</button>
+              <button className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200" onClick={expandAllGroups}>Expand All</button>
+            </div>
+          </div>
         </div>
 
-        <OssVulnTables repoName={repoName} />
+        {/* Project KPIs */}
+        <ChartHost
+          datasetKey={`project.kpis.${uuid}`}
+          title="Project KPIs"
+          adapter={ProjectKPIAdapter}
+          defaultType="kpis"
+          availableTypes={["kpis","bar","bullet"]}
+          params={{ projectId: uuid }}
+          timeRangeOptions={[]}
+        />
 
-        <TerraformFindings projectId={item.uuid} repoName={repoName} />
+        {/* Languages Breakdown — placed right after Overview */}
+        <div id="languages" className={`bg-white p-4 rounded shadow-sm ${cardMuted((langs||[]).length===0)}`}>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-medium">Languages Breakdown</h2>
+            <div className="text-xs text-slate-600">{langs?.length || 0} rows</div>
+          </div>
+          <ChartHost
+            datasetKey={`project.languages.${uuid}`}
+            title="Languages Breakdown"
+            adapter={ProjectLanguagesAdapter}
+            defaultType="donut"
+            availableTypes={["donut","pie","treemap","sunburst","bar"]}
+            params={{ projectId: uuid }}
+            timeRangeOptions={[]}
+          />
+        </div>
 
-        <div className="bg-white p-4 rounded shadow-sm">
+        {/* Repo group */}
+        <div id="repo" className="px-1 pt-1 text-xs uppercase tracking-wide text-slate-500 flex items-center justify-between">
+          <span>Repo</span>
+          <button className="text-xs px-2 py-0.5 border rounded" onClick={() => toggleGroup('repo')}>{collapsed.repo ? 'Expand' : 'Collapse'}</button>
+        </div>
+        <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${collapsed.repo ? 'hidden' : ''}`}>
+        <div id="contributors-card" className={`bg-white p-4 rounded shadow-sm ${cardMuted((contributors||[]).length===0)} ${collapsed.repo ? 'hidden' : ''}`}>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-medium">Contributors</h2>
+            <div className="flex items-center gap-2 text-xs text-slate-600">
+              <span>{contributors?.length || 0} rows</span>
+              <button
+                className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+                onClick={() => openFullscreenTable({ id: 'contributors', name: 'Contributors', columns: contributorColumns(), rows: contributors })}
+              >
+                Fullscreen
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
+            <label className="flex items-center gap-2">
+              <span>Sort:</span>
+              <select className="border rounded px-2 py-1" value={contribSort} onChange={(e) => { setContribSort((e.target.value as 'commits'|'recent')); }}>
+                <option value="commits">Most commits</option>
+                <option value="recent">Most recent</option>
+              </select>
+            </label>
+          </div>
+          {loadingContrib ? (
+            <div className="text-sm text-slate-600">Loading…</div>
+          ) : errorContrib ? (
+            <div className="text-sm text-red-700">{errorContrib}</div>
+          ) : (
+            (() => {
+              const columns: ColumnDef<any>[] = [
+                { key: 'login', header: 'Login', sortable: true, filter: { type: 'text', getValue: (c) => String(c.display_name || c.login || '') }, render: (c) => (
+                  <span className="font-medium">{c.display_name || c.login}<span className="text-slate-500">{c.display_name ? ` (@${c.login})` : ''}</span></span>
+                ) },
+                { key: 'email', header: 'Email', sortable: true, filter: { type: 'text', getValue: (c) => String(c.email || '') } },
+                { key: 'last_commit_at', header: 'Last Commit', sortable: true, render: (c) => c.last_commit_at ? new Date(c.last_commit_at).toLocaleString() : '—' },
+                { key: 'commits_count', header: 'Commits', sortable: true, render: (c) => <span className="font-semibold">{c.commits_count ?? 0}</span> },
+                { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (c) => (
+                  <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setContribAiCtx(c)}>Ask AI</button>
+                ) },
+              ]
+              return (
+                <>
+                  <DataTable
+                    data={contributors}
+                    columns={columns}
+                    defaultPageSize={10}
+                    filterKeys={['login','display_name','email']}
+                  />
+                  {contribAiCtx && !fsOpen && (
+                    <div className="mt-3">
+                      <AiAssistantPanel
+                        target="cicd"
+                        projectId={item.uuid}
+                        repoShort={repoName || undefined}
+                        context={contribAiCtx}
+                        onClose={() => setContribAiCtx(null)}
+                      />
+                    </div>
+                  )}
+                </>
+              )
+            })()
+          )}
+        </div>
+
+        <div id="commits-card" className={`bg-white p-4 rounded shadow-sm ${cardMuted((commits||[]).length===0)} ${collapsed.repo ? 'hidden' : ''}`}>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-medium">Commit History</h2>
+            <div className="flex items-center gap-2 text-xs text-slate-600">
+              <span>{commits?.length || 0} rows</span>
+              <button
+                className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+                onClick={() => openFullscreenTable({ id: 'commits', name: 'Commit History', columns: commitColumns(), rows: commits })}
+              >
+                Fullscreen
+              </button>
+            </div>
+          </div>
+          {loadingCommits ? (
+            <div className="text-sm text-slate-600">Loading…</div>
+          ) : errorCommits ? (
+            <div className="text-sm text-red-700">{errorCommits}</div>
+          ) : commits.length === 0 ? (
+            <div className="text-sm text-slate-600">No commits found.</div>
+          ) : (
+            (() => {
+              const columns: ColumnDef<any>[] = [
+                { key: 'message', header: 'Message', sortable: true, filter: { type: 'text', getValue: (c) => String(c.message || '') }, render: (c) => <span className="truncate inline-block max-w-[40rem]" title={c.message || ''}>{c.message || '(no message)'}</span> },
+                { key: 'committed_at', header: 'Committed At', sortable: true, render: (c) => new Date(c.committed_at).toLocaleString() },
+                { key: 'author_login', header: 'Author', sortable: true, filter: { type: 'text', getValue: (c) => String(c.author_login || '') } },
+                { key: 'author_email', header: 'Email', sortable: true, filter: { type: 'text', getValue: (c) => String(c.author_email || '') } },
+                { key: 'sha', header: 'SHA', sortable: true, filter: { type: 'text', getValue: (c) => String(c.sha || '') }, render: (c) => c.sha?.substring(0,7) || '' },
+                { key: 'url', header: 'Link', sortable: false, render: (c) => c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View</a> : <span className="text-slate-400">No link</span> },
+                { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (c) => (
+                  <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setCommitAiCtx(c)}>Ask AI</button>
+                ) },
+              ]
+              return (
+                <>
+                  <DataTable
+                    data={commits}
+                    columns={columns}
+                    defaultPageSize={10}
+                    filterKeys={['message','author_login','author_email','sha']}
+                  />
+                  {commitAiCtx && !fsOpen && (
+                    <div className="mt-3">
+                      <AiAssistantPanel
+                        target="cicd"
+                        projectId={item.uuid}
+                        repoShort={repoName || undefined}
+                        context={commitAiCtx}
+                        onClose={() => setCommitAiCtx(null)}
+                      />
+                    </div>
+                  )}
+                </>
+              )
+            })()
+          )}
+        </div>
+        </div>
+
+        {/* Vulnerabilities group */}
+        <div id="vulnerabilities" className="px-1 pt-1 text-xs uppercase tracking-wide text-slate-500 flex items-center justify-between">
+          <span>Vulnerabilities</span>
+          <button className="text-xs px-2 py-0.5 border rounded" onClick={() => toggleGroup('vulnerabilities')}>{collapsed.vulnerabilities ? 'Expand' : 'Collapse'}</button>
+        </div>
+        <div className={`${collapsed.vulnerabilities ? 'hidden' : ''}`}>
+          <OssVulnTables repoName={repoName} projectId={item.uuid} onRequestFullscreen={openFullscreenTable} overlayActive={fsOpen} />
+        </div>
+
+        {/* Build group */}
+        <div id="build" className="px-1 pt-1 text-xs uppercase tracking-wide text-slate-500 flex items-center justify-between">
+          <span>Build</span>
+          <button className="text-xs px-2 py-0.5 border rounded" onClick={() => toggleGroup('build')}>{collapsed.build ? 'Expand' : 'Collapse'}</button>
+        </div>
+        <div className={`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 ${collapsed.build ? 'hidden' : ''}`}>
+          <TerraformFindings projectId={item.uuid} repoName={repoName} onRequestFullscreen={openFullscreenTable} overlayActive={fsOpen} />
+
+          <BinariesTable projectId={item.uuid} repoName={repoName} onRequestFullscreen={openFullscreenTable} />
+
+          {/* CI/CD: GitHub Actions recent runs */}
+          <div id="cicd-card" className={`bg-white p-4 rounded shadow-sm ${cardMuted((ciRuns||[]).length===0)}`}>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-medium">CI/CD</h2>
+            <div className="text-xs text-slate-600">GitHub Actions recent runs</div>
+            <div className="text-xs text-slate-600 ml-auto mr-3">{ciRuns?.length || 0} rows</div>
+            <div className="flex items-center gap-2">
+              <button
+                className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+                onClick={() => openFullscreenTable({
+                  id:'cicd',
+                  name:'CI/CD — GitHub Actions',
+                  columns: cicdColumns(),
+                  rows: ciRuns
+                })}
+              >
+                Fullscreen
+              </button>
+              <button
+                className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+                onClick={() => downloadCsv('cicd', serializeCsvFromFields(
+                  [{key:'workflow_name',label:'Workflow'},{key:'event',label:'Event'},{key:'status',label:'Status'},{key:'conclusion',label:'Conclusion'}],
+                  ciRuns
+                ))}
+              >
+                Export CSV
+              </button>
+            </div>
+          </div>
+          {ciError && <div className="text-sm text-red-700">{ciError}</div>}
+          {ciLoading ? (
+            <div className="text-sm text-slate-600">Loading…</div>
+          ) : (
+            (() => {
+              if (!ciRuns || ciRuns.length === 0) return <div className="text-sm text-slate-600">No workflow runs found.</div>
+              const columns: ColumnDef<any>[] = [
+                { key: 'workflow_name', header: 'Workflow', sortable: true, filter: { type: 'text', getValue: (r) => String(r.workflow_name || r.name || '') } },
+                { key: 'event', header: 'Event', sortable: true, filter: { type: 'enum' } },
+                { key: 'status', header: 'Status', sortable: true, filter: { type: 'enum', enumValues: ['queued','in_progress','completed'] } },
+                { key: 'conclusion', header: 'Conclusion', sortable: true, filter: { type: 'enum', enumValues: ['success','failure','cancelled','skipped','neutral','timed_out','action_required','stale'] } },
+                { key: 'branch', header: 'Branch', sortable: true, filter: { type: 'text', getValue: (r) => String(r.branch || '') } },
+                { key: 'run_number', header: 'Run #', sortable: true, widthClass: 'w-20' },
+                { key: 'actor_login', header: 'Actor', sortable: true, filter: { type: 'text', getValue: (r) => String(r.actor_login || '') } },
+                { key: 'commit_sha', header: 'Commit', sortable: true, filter: { type: 'text', getValue: (r) => String(r.commit_sha || '') }, render: (r) => r.commit_sha ? r.commit_sha.substring(0,7) : '' },
+                { key: 'created_at', header: 'Created', sortable: true, render: (r) => r.created_at ? new Date(r.created_at).toLocaleString() : '' },
+                { key: 'html_url', header: 'Link', sortable: false, render: (r) => r.html_url ? <a href={r.html_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View</a> : <span className="text-slate-400">—</span> },
+                { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (r) => (
+                  <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setCiAiCtx(r)}>Ask AI</button>
+                ) },
+              ]
+              return (
+                <>
+                  <DataTable
+                    data={ciRuns}
+                    columns={columns}
+                    defaultPageSize={10}
+                    filterKeys={['workflow_name','event','status','conclusion','branch','actor_login','commit_sha']}
+                  />
+                  {ciAiCtx && !fsOpen && (
+                    <div className="mt-3">
+                      <AiAssistantPanel
+                        target="cicd"
+                        projectId={item.uuid}
+                        repoShort={repoName || undefined}
+                        context={ciAiCtx}
+                        onClose={() => setCiAiCtx(null)}
+                      />
+                    </div>
+                  )}
+                </>
+              )
+            })()
+          )}
+        </div>
+        </div>
+
+        <div id="findings" className="px-1 pt-1 text-xs uppercase tracking-wide text-slate-500 flex items-center justify-between">
+          <span>Findings</span>
+          <button className="text-xs px-2 py-0.5 border rounded" onClick={() => toggleGroup('findings')}>{collapsed.findings ? 'Expand' : 'Collapse'}</button>
+        </div>
+        <div className={`grid grid-cols-1 md:grid-cols-2 gap-4 ${collapsed.findings ? 'hidden' : ''}`}>
+        <div id="secrets-card" className={`bg-white p-4 rounded shadow-sm ${cardMuted((combinedSecrets||[]).length===0)} ${collapsed.findings ? 'hidden' : ''}`}>
           <div className="flex items-center justify-between mb-2">
             <h2 className="font-medium">Published Secrets (GenAI + Generic)</h2>
             <div className="flex items-center gap-3 text-xs text-slate-600">
               <span>Values shown only for admins</span>
+              <span className="ml-2">{combinedSecrets?.length || 0} rows</span>
+              <button
+                type="button"
+                className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+                title="Fullscreen"
+                onClick={() => {
+                  const columns: ColumnDef<any>[] = [
+                    { key: 'type', header: 'Type', sortable: true, filter: { type: 'enum' } },
+                    { key: 'file_path', header: 'Path & File', sortable: true, filter: { type: 'text', getValue: (r) => String(r.file_path || '') }, render: (r) => (
+                      <span title={r.file_path || ''}>{r.file_path}{typeof r.line_start === 'number' ? `:${r.line_start}` : ''}</span>
+                    ) },
+                    { key: 'validation_status', header: 'Validated', sortable: true, filter: { type: 'enum', enumValues: ['valid','invalid','error','unknown'], getValue: (r) => String(r.validation_status || 'unknown').toLowerCase() }, render: (r) => (r.validation_status || '').toUpperCase() || 'UNKNOWN' },
+                    { key: 'value', header: 'Value', sortable: false, filter: { type: 'text', disabled: !isAdmin, getValue: (r) => String(r.value || '') }, render: (r) => (
+                      <span className="inline-flex items-center gap-2">
+                        <span>{(() => { const s = (r.value || '').toString(); if (!s) return '••••'; if (isAdmin && showValues) return s; return `••••${s.slice(-4)}`; })()}</span>
+                      </span>
+                    ) },
+                    { key: 'created_at', header: 'Detected', sortable: true, render: (r) => r.created_at ? new Date(r.created_at).toLocaleString() : '' },
+                    { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (r) => (
+                      <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setSecretAiCtx(r)}>Ask AI</button>
+                    ) },
+                  ]
+                  openFullscreenTable({ id:'secrets', name:'Published Secrets', columns, rows: combinedSecrets })
+                }}
+              >
+                Fullscreen
+              </button>
+              <button
+                type="button"
+                className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+                title="Export CSV"
+                onClick={() => downloadCsv('secrets', serializeCsvFromFields(
+                  [
+                    {key:'type',label:'Type'},{key:'file_path',label:'Path & File'},{key:'validation_status',label:'Validated'},
+                    {key:'value',label:'Value'},{key:'created_at',label:'Detected'}
+                  ],
+                  combinedSecrets
+                ))}
+              >
+                Export CSV
+              </button>
               {isAdmin && (
                 <button
                   type="button"
@@ -605,23 +1593,62 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
                   </span>
                 ) },
                 { key: 'created_at', header: 'Detected', sortable: true, render: (r) => r.created_at ? new Date(r.created_at).toLocaleString() : '' },
+                { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (r) => (
+                  <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setSecretAiCtx(r)}>Ask AI</button>
+                ) },
               ]
               return (
-                <DataTable
-                  data={combinedSecrets}
-                  columns={columns}
-                  defaultPageSize={10}
-                  filterKeys={['type','file_path','validation_status','value']}
-                />
+                <>
+                  <DataTable
+                    data={combinedSecrets}
+                    columns={columns}
+                    defaultPageSize={10}
+                    filterKeys={['type','file_path','validation_status','value']}
+                  />
+                  {secretAiCtx && !fsOpen && (
+                    <div className="mt-3">
+                      <AiAssistantPanel
+                        target="secret"
+                        projectId={item.uuid}
+                        repoShort={repoName || undefined}
+                        context={secretAiCtx}
+                        onClose={() => setSecretAiCtx(null)}
+                      />
+                    </div>
+                  )}
+                </>
               )
             })()
           )}
         </div>
 
-        <div className="bg-white p-4 rounded shadow-sm">
+        <div id="codeql-card" className={`bg-white p-4 rounded shadow-sm ${cardMuted((cqFindings||[]).length===0)} ${collapsed.findings ? 'hidden' : ''}`}>
           <div className="flex items-center justify-between mb-2">
             <h2 className="font-medium">CodeQL Findings</h2>
             <div className="text-xs text-slate-600">Latest successful scan</div>
+            <div className="text-xs text-slate-600 ml-auto mr-3">{cqFindings?.length || 0} rows</div>
+            <div className="flex items-center gap-2">
+              <button
+                className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+                onClick={() => openFullscreenTable({
+                  id:'codeql',
+                  name:'CodeQL Findings',
+                  columns: codeqlColumns(),
+                  rows: cqFindings
+                })}
+              >
+                Fullscreen
+              </button>
+              <button
+                className="px-2 py-1 border rounded bg-slate-100 hover:bg-slate-200"
+                onClick={() => downloadCsv('codeql', serializeCsvFromFields(
+                  [{key:'severity',label:'Severity'},{key:'rule_id',label:'Rule'},{key:'file',label:'File'},{key:'line',label:'Line'},{key:'message',label:'Message'}],
+                  cqFindings
+                ))}
+              >
+                Export CSV
+              </button>
+            </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3 text-sm">
             <label className="flex flex-col">
@@ -687,188 +1714,245 @@ export default function ProjectDetail({ uuid }: { uuid: string }) {
               { key: 'line', header: 'Line', sortable: true },
               { key: 'message', header: 'Message', sortable: false, filter: { type: 'text', getValue: (it) => String(it.message || '') }, render: (it) => (<span title={it.message || ''}>{it.message || ''}</span>) },
               { key: 'help_uri', header: 'Docs', sortable: false, render: (it) => (it.help_uri ? <a className="text-blue-600 underline" href={it.help_uri} target="_blank" rel="noreferrer">Docs</a> : <span className="text-slate-400">—</span>) },
+              { key: 'exploit', header: 'Exploit', sortable: false, render: (it) => {
+                const k = String(it.rule_id||'')
+                const st = cqExploitMap[k]?.status ?? null
+                const cls = st===true ? 'bg-green-600 text-white' : st===false ? 'bg-slate-300 text-slate-900' : 'bg-slate-100 text-slate-800'
+                const label = st===true ? 'True' : st===false ? 'False' : 'Unknown'
+                return (
+                  <button type="button" className={`text-xs px-2 py-0.5 rounded border ${cls}`} onClick={() => openCqManage(k)} title="Manage exploit status">
+                    {label}
+                  </button>
+                )
+              } },
+              { key: 'ask_ai', header: 'Ask AI', sortable: false, render: (it) => (
+                <button type="button" className="text-xs px-2 py-0.5 border rounded" onClick={() => setCqAiCtx(it)}>Ask AI</button>
+              ) },
             ]
             return (
-              <DataTable
-                data={cqFindings}
-                columns={columns}
-                defaultPageSize={10}
-                filterKeys={['severity','rule_id','file','message']}
-              />
+              <>
+                <DataTable
+                  data={cqFindings}
+                  columns={columns}
+                  defaultPageSize={10}
+                  filterKeys={['severity','rule_id','file','message']}
+                />
+                {cqManageKey && !fsOpen && (
+                  <div className="mt-3 border rounded p-3 bg-white">
+                    <div className="text-sm font-medium mb-2">Manage Exploit Status — {cqManageKey}</div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm mb-2">
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={cqManageStatus} onChange={e=>setCqManageStatus(e.target.checked)} />
+                        <span>Exploit available</span>
+                      </label>
+                      <div className="md:col-span-2">
+                        <div className="text-xs text-slate-600 mb-1">Citations (one per line)</div>
+                        <textarea className="border rounded px-2 py-1 w-full min-h-[80px]" value={cqManageCitations} onChange={e=>setCqManageCitations(e.target.value)} placeholder="https://exploit-db.com/...\nhttps://github.com/owner/repo" />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button type="button" className="px-3 py-1 bg-blue-600 text-white rounded" onClick={saveCqManage}>Save</button>
+                      <button type="button" className="px-3 py-1 bg-slate-200 rounded" onClick={()=>setCqManageKey(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+                {cqAiCtx && !fsOpen && (
+                  <div className="mt-3">
+                    <AiAssistantPanel
+                      target="codeql"
+                      projectId={item.uuid}
+                      repoShort={(cqRepo || repoName || undefined)}
+                      context={cqAiCtx}
+                      onClose={() => setCqAiCtx(null)}
+                    />
+                  </div>
+                )}
+              </>
             )
           })()}
         </div>
-
-        {/* CI/CD: GitHub Actions recent runs */}
-        <div className="bg-white p-4 rounded shadow-sm">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-medium">CI/CD</h2>
-            <div className="text-xs text-slate-600">GitHub Actions recent runs</div>
-          </div>
-          {ciError && <div className="text-sm text-red-700">{ciError}</div>}
-          {ciLoading ? (
-            <div className="text-sm text-slate-600">Loading…</div>
-          ) : (
-            (() => {
-              if (!ciRuns || ciRuns.length === 0) return <div className="text-sm text-slate-600">No workflow runs found.</div>
-              const columns: ColumnDef<any>[] = [
-                { key: 'workflow_name', header: 'Workflow', sortable: true, filter: { type: 'text', getValue: (r) => String(r.workflow_name || r.name || '') } },
-                { key: 'event', header: 'Event', sortable: true, filter: { type: 'enum' } },
-                { key: 'status', header: 'Status', sortable: true, filter: { type: 'enum', enumValues: ['queued','in_progress','completed'] } },
-                { key: 'conclusion', header: 'Conclusion', sortable: true, filter: { type: 'enum', enumValues: ['success','failure','cancelled','skipped','neutral','timed_out','action_required','stale'] } },
-                { key: 'branch', header: 'Branch', sortable: true, filter: { type: 'text', getValue: (r) => String(r.branch || '') } },
-                { key: 'run_number', header: 'Run #', sortable: true, widthClass: 'w-20' },
-                { key: 'actor_login', header: 'Actor', sortable: true, filter: { type: 'text', getValue: (r) => String(r.actor_login || '') } },
-                { key: 'commit_sha', header: 'Commit', sortable: true, filter: { type: 'text', getValue: (r) => String(r.commit_sha || '') }, render: (r) => r.commit_sha ? r.commit_sha.substring(0,7) : '' },
-                { key: 'created_at', header: 'Created', sortable: true, render: (r) => r.created_at ? new Date(r.created_at).toLocaleString() : '' },
-                { key: 'html_url', header: 'Link', sortable: false, render: (r) => r.html_url ? <a href={r.html_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View</a> : <span className="text-slate-400">—</span> },
-              ]
-              return (
-                <DataTable
-                  data={ciRuns}
-                  columns={columns}
-                  defaultPageSize={10}
-                  filterKeys={['workflow_name','event','status','conclusion','branch','actor_login','commit_sha']}
-                />
-              )
-            })()
-          )}
         </div>
 
-        <div className="bg-white p-4 rounded shadow-sm">
-          <h2 className="font-medium mb-2">Languages Breakdown</h2>
-          {loadingLangs ? (
-            <div className="text-sm text-slate-600">Loading…</div>
-          ) : errorLangs ? (
-            <div className="text-sm text-red-700">{errorLangs}</div>
-          ) : langs.length === 0 ? (
-            <div className="text-sm text-slate-600">No language data yet.</div>
-          ) : (
-            <div className="space-y-3">
-              {(() => {
-                const total = langs.reduce((s, l) => s + (l.bytes || 0), 0)
-                return (
-                  <div className="w-full">
-                    <div className="h-3 w-full flex overflow-hidden rounded border border-slate-200">
-                      {langs.map((l) => {
-                        const pct = total > 0 ? (l.bytes / total) * 100 : 0
-                        const color = langColorClass(l.language)
-                        return (
-                          <div key={l.language} title={`${l.language} ${pct.toFixed(1)}%`} style={{ width: `${pct}%` }} className={`${color}`} />
-                        )
-                      })}
-                    </div>
-                    <div className="text-xs text-slate-500 mt-1">
-                      Total: {(() => {
-                        const totalB = langs.reduce((s, l) => s + (l.bytes || 0), 0)
-                        const units = ['B', 'KB', 'MB', 'GB']
-                        let v = totalB
-                        let i = 0
-                        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
-                        return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`
-                      })()}
-                    </div>
-                  </div>
-                )
-              })()}
-              <ul className="divide-y">
-                {langs.map((l) => {
-                  const total = langs.reduce((s, x) => s + (x.bytes || 0), 0)
-                  const pct = total > 0 ? (l.bytes / total) * 100 : 0
-                  return (
-                    <li key={l.language} className="py-1.5 text-sm flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className={`inline-block w-3 h-3 rounded-full border border-white shadow-sm ${langColorClass(l.language)}`}></span>
-                        <span className="font-medium">{l.language}</span>
-                        {l.is_primary ? <span className="text-xs text-amber-700 bg-amber-100 border border-amber-200 px-1 rounded">Primary</span> : null}
-                      </div>
-                      <div className="text-right text-slate-600">
-                        <span className="mr-3 font-mono">LOC: {l.loc?.toLocaleString?.() ?? l.loc}</span>
-                        <span className="mr-3">{(() => {
-                          const units = ['B', 'KB', 'MB', 'GB']
-                          let v = l.bytes
-                          let i = 0
-                          while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
-                          return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`
-                        })()}</span>
-                        <span className="mr-3">Files: {l.files?.toLocaleString?.() ?? l.files}</span>
-                        <span>{pct.toFixed(1)}%</span>
-                      </div>
-                    </li>
-                  )
-                })}
+          {/* Close left column and add Section Nav */}
+          </div>
+          <div className="hidden lg:block h-fit sticky top-4">
+            <div className="bg-white rounded shadow-sm border p-3">
+              <div className="font-medium text-sm mb-2">Sections</div>
+              <ul className="space-y-1 text-sm">
+                <li className="flex items-center justify-between"><a href="#overview" className="text-blue-600 hover:underline">Overview</a></li>
+                <li className="flex items-center justify-between"><a href="#languages" className="text-blue-600 hover:underline">Languages</a><span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] rounded-full bg-slate-100 text-slate-700 text-xs px-1">1</span></li>
+                <li className="flex items-center justify-between"><a href="#repo" className="text-blue-600 hover:underline">Repo</a><span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] rounded-full bg-slate-100 text-slate-700 text-xs px-1">2</span></li>
+                <li className="flex items-center justify-between"><a href="#build" className="text-blue-600 hover:underline">Build</a><span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] rounded-full bg-slate-100 text-slate-700 text-xs px-1">3</span></li>
+                <li className="flex items-center justify-between"><a href="#findings" className="text-blue-600 hover:underline">Findings</a><span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] rounded-full bg-slate-100 text-slate-700 text-xs px-1">2</span></li>
+                <li className="flex items-center justify-between"><a href="#vulnerabilities" className="text-blue-600 hover:underline">Vulnerabilities</a><span className="ml-2 inline-flex items-center justify-center min-w-[1.25rem] rounded-full bg-slate-100 text-slate-700 text-xs px-1">1</span></li>
               </ul>
             </div>
-          )}
-        </div>
-
-        <div className="bg-white p-4 rounded shadow-sm">
-          <h2 className="font-medium mb-2">Contributors</h2>
-          <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
-            <label className="flex items-center gap-2">
-              <span>Sort:</span>
-              <select className="border rounded px-2 py-1" value={contribSort} onChange={(e) => { setContribSort((e.target.value as 'commits'|'recent')); }}>
-                <option value="commits">Most commits</option>
-                <option value="recent">Most recent</option>
-              </select>
-            </label>
           </div>
-          {loadingContrib ? (
-            <div className="text-sm text-slate-600">Loading…</div>
-          ) : errorContrib ? (
-            <div className="text-sm text-red-700">{errorContrib}</div>
-          ) : (
-            (() => {
-              const columns: ColumnDef<any>[] = [
-                { key: 'login', header: 'Login', sortable: true, filter: { type: 'text', getValue: (c) => String(c.display_name || c.login || '') }, render: (c) => (
-                  <span className="font-medium">{c.display_name || c.login}<span className="text-slate-500">{c.display_name ? ` (@${c.login})` : ''}</span></span>
-                ) },
-                { key: 'email', header: 'Email', sortable: true, filter: { type: 'text', getValue: (c) => String(c.email || '') } },
-                { key: 'last_commit_at', header: 'Last Commit', sortable: true, render: (c) => c.last_commit_at ? new Date(c.last_commit_at).toLocaleString() : '—' },
-                { key: 'commits_count', header: 'Commits', sortable: true, render: (c) => <span className="font-semibold">{c.commits_count ?? 0}</span> },
-              ]
-              return (
-                <DataTable
-                  data={contributors}
-                  columns={columns}
-                  defaultPageSize={10}
-                  filterKeys={['login','display_name','email']}
-                />
-              )
-            })()
-          )}
-        </div>
-
-        <div className="bg-white p-4 rounded shadow-sm">
-          <h2 className="font-medium mb-2">Commit History</h2>
-          {loadingCommits ? (
-            <div className="text-sm text-slate-600">Loading…</div>
-          ) : errorCommits ? (
-            <div className="text-sm text-red-700">{errorCommits}</div>
-          ) : commits.length === 0 ? (
-            <div className="text-sm text-slate-600">No commits found.</div>
-          ) : (
-            (() => {
-              const columns: ColumnDef<any>[] = [
-                { key: 'message', header: 'Message', sortable: true, filter: { type: 'text', getValue: (c) => String(c.message || '') }, render: (c) => <span className="truncate inline-block max-w-[40rem]" title={c.message || ''}>{c.message || '(no message)'}</span> },
-                { key: 'committed_at', header: 'Committed At', sortable: true, render: (c) => new Date(c.committed_at).toLocaleString() },
-                { key: 'author_login', header: 'Author', sortable: true, filter: { type: 'text', getValue: (c) => String(c.author_login || '') } },
-                { key: 'author_email', header: 'Email', sortable: true, filter: { type: 'text', getValue: (c) => String(c.author_email || '') } },
-                { key: 'sha', header: 'SHA', sortable: true, filter: { type: 'text', getValue: (c) => String(c.sha || '') }, render: (c) => c.sha?.substring(0,7) || '' },
-                { key: 'url', header: 'Link', sortable: false, render: (c) => c.url ? <a href={c.url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View</a> : <span className="text-slate-400">No link</span> },
-              ]
-              return (
-                <DataTable
-                  data={commits}
-                  columns={columns}
-                  defaultPageSize={10}
-                  filterKeys={['message','author_login','author_email','sha']}
-                />
-              )
-            })()
-          )}
         </div>
       </main>
+
+      {/* Exploit Help Modal */}
+      <ExploitHelpModal open={exploitHelpOpen} onClose={() => setExploitHelpOpen(false)} />
+
+      {/* Ask AI Drawer */}
+      <div className={`fixed top-0 right-0 h-full w-full sm:w-[28rem] bg-white shadow-2xl border-l z-50 transform transition-transform ${askAiOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+        <div className="flex items-center justify-between p-3 border-b">
+          <div className="font-medium">Ask AI</div>
+          <button className="px-2 py-1 border rounded" onClick={() => setAskAiOpen(false)}>Close</button>
+        </div>
+        <div className="p-3 space-y-3 text-sm">
+          <label className="flex flex-col">
+            <span className="text-xs text-slate-600">Question</span>
+            <textarea className="border rounded px-2 py-1 min-h-[100px]" value={askAiQuestion} onChange={e=>setAskAiQuestion(e.target.value)} placeholder="Ask something about the visible tables..." />
+          </label>
+          <div className="flex items-center gap-2">
+            <button className="px-3 py-1 bg-blue-600 text-white rounded disabled:opacity-50" disabled={askAiBusy || !askAiQuestion.trim()} onClick={onAskAiRun}>
+              {askAiBusy ? 'Running…' : 'Run'}
+            </button>
+            <button className="px-3 py-1 bg-slate-200 rounded" onClick={() => setAskAiQuestion('')}>Clear</button>
+          </div>
+          <div className="text-xs text-slate-600">Response</div>
+          <div className="border rounded p-2 bg-slate-50 whitespace-pre-wrap min-h-[120px]">{askAiResponse || '—'}</div>
+          {(() => {
+            try {
+              const m = /```json\s*([\s\S]*?)\s*```/m.exec(askAiResponse || '')
+              if (!m) return null
+              const parsed = JSON.parse(m[1])
+              const suggestions = Array.isArray(parsed?.suggestions) ? parsed.suggestions : []
+              if (suggestions.length === 0) return null
+              return (
+                <div className="space-y-2">
+                  <div className="text-xs text-slate-600">Suggestions</div>
+                  <ul className="space-y-1">
+                    {suggestions.map((s:any, idx:number) => (
+                      <li key={idx} className="flex items-center justify-between gap-2">
+                        <span className="text-xs">{s.tableId}.{s.field} → {String(s.value)}</span>
+                        <button className="px-2 py-0.5 text-xs border rounded" onClick={() => {
+                          if (fsOpen && fsConfig && fsConfig.id === s.tableId) {
+                            const rows = [...fsConfig.rows]
+                            if (Array.isArray(rows) && rows[s.rowIndex]) {
+                              rows[s.rowIndex] = { ...rows[s.rowIndex], [s.field]: s.value }
+                              setFsConfig({ ...fsConfig, rows })
+                            }
+                          }
+                        }}>Apply suggestion</button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            } catch { return null }
+          })()}
+        </div>
+      </div>
+
+      {/* Floating Ask AI button */}
+      <button
+        type="button"
+        className="fixed bottom-4 right-4 px-3 py-2 bg-amber-500 text-white rounded shadow-lg"
+        onClick={() => setAskAiOpen(true)}
+        title="Ask AI"
+      >
+        Ask AI
+      </button>
+
+      {/* Fullscreen overlay for tables */}
+      {fsOpen && fsConfig && (
+        <div className="fixed inset-0 z-50 bg-black/60">
+          <div className="absolute inset-0 md:inset-6 bg-white rounded shadow-lg flex flex-col">
+            <div className="flex items-center justify-between p-3 border-b">
+              <div className="font-medium">{fsConfig.name}</div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs flex items-center gap-1">
+                  <span>Density</span>
+                  <select className="border rounded px-2 py-1" value={fsDensity} onChange={e => setFsDensity(e.target.value as any)}>
+                    <option value="comfortable">Comfortable</option>
+                    <option value="compact">Compact</option>
+                  </select>
+                </label>
+                <button className="px-2 py-1 border rounded" onClick={() => downloadCsv(fsConfig.id, serializeCsvFromFields(fsEffectiveFields, fsConfig.rows))}>Export CSV</button>
+                <button className="px-2 py-1 border rounded" onClick={() => setFsOpen(false)}>Close</button>
+              </div>
+            </div>
+            <div className={`${fsDensity === 'compact' ? 'text-xs' : 'text-sm'} flex-1 overflow-auto`}>
+              <div className="p-3">
+                <DataTable
+                  data={fsConfig.rows}
+                  columns={(fsConfig.columns && fsConfig.columns.length > 0)
+                    ? overlayColumns
+                    : fsEffectiveFields.map(f => ({ key: f.key, header: f.label, sortable: true, filter: { type: 'text' } }))}
+                  defaultPageSize={10}
+                  filterKeys={(fsConfig.columns && fsConfig.columns.length > 0)
+                    ? overlayColumns.map(c => String(c.key))
+                    : fsEffectiveFields.map(f => f.key)}
+                />
+                {fsConfig.id === 'contributors' && item ? (
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <ChartHost
+                      datasetKey={`fs.contributors.top.${item.uuid}`}
+                      title="Top Contributors"
+                      adapter={ProjectContributorsAdapter}
+                      defaultType="bar"
+                      availableTypes={["bar","donut","line"]}
+                      params={{ projectId: item.uuid }}
+                    />
+                    <ChartHost
+                      datasetKey={`fs.contributors.trend.${item.uuid}`}
+                      title="Contributors Trend"
+                      adapter={ProjectCommitsActivityAdapter}
+                      defaultType="line"
+                      availableTypes={["line","bar"]}
+                      params={{ projectId: item.uuid }}
+                    />
+                  </div>
+                ) : null}
+                {fsConfig.id === 'commits' && item ? (
+                  <div className="mt-3">
+                    <ChartHost
+                      datasetKey={`fs.commits.trend.${item.uuid}`}
+                      title="Commits Activity"
+                      adapter={ProjectCommitsActivityAdapter}
+                      defaultType="line"
+                      availableTypes={["line","bar"]}
+                      params={{ projectId: item.uuid }}
+                    />
+                  </div>
+                ) : null}
+                {fsManageKey && (
+                  <div className="mt-3 border rounded p-3 bg-white">
+                    <div className="text-sm font-medium mb-2">Manage Exploit Status — {fsManageKey}</div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm mb-2">
+                      <label className="flex items-center gap-2">
+                        <input type="checkbox" checked={fsManageStatus} onChange={e=>setFsManageStatus(e.target.checked)} />
+                        <span>Exploit available</span>
+                      </label>
+                      <div className="md:col-span-2">
+                        <div className="text-xs text-slate-600 mb-1">Citations (one per line)</div>
+                        <textarea className="border rounded px-2 py-1 w-full min-h-[80px]" value={fsManageCitations} onChange={e=>setFsManageCitations(e.target.value)} placeholder="https://exploit-db.com/...\nhttps://github.com/owner/repo" />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button type="button" className="px-3 py-1 bg-blue-600 text-white rounded" onClick={saveFsManage}>Save</button>
+                      <button type="button" className="px-3 py-1 bg-slate-200 rounded" onClick={()=>setFsManageKey(null)}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+                {fsAiCtx && (
+                  <div className="mt-3">
+                    <AiAssistantPanel
+                      target={fsConfig.id === 'codeql' ? 'codeql' : fsConfig.id === 'cicd' ? 'cicd' : fsConfig.id === 'secrets' ? 'secret' : fsConfig.id === 'contributors' ? 'cicd' : fsConfig.id === 'commits' ? 'cicd' : fsConfig.id === 'terraform' ? 'terraform' : fsConfig.id === 'oss' ? 'oss' : 'cicd'}
+                      projectId={item.uuid}
+                      repoShort={repoName || undefined}
+                      context={fsAiCtx}
+                      onClose={() => setFsAiCtx(null)}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

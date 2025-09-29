@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { xhrGetJson } from '../lib/xhr'
 import DataTable, { type ColumnDef } from '../components/DataTable'
+import ChartHost from '../components/ChartKit/ChartHost'
+import { OrgSeverityAdapter } from '../components/ChartKit/adapters/OrgSeverityAdapter'
+import { OrgKPIsAdapter } from '../components/ChartKit/adapters/OrgKPIsAdapter'
+import { TopReposAdapter } from '../components/ChartKit/adapters/TopReposAdapter'
+import { RecentScansTrendAdapter } from '../components/ChartKit/adapters/RecentScansTrendAdapter'
+import { OrgProjectsLanguagesAdapter } from '../components/ChartKit/adapters/OrgProjectsLanguagesAdapter'
+import { OrgProjectsContributorsAdapter } from '../components/ChartKit/adapters/OrgProjectsContributorsAdapter'
+import { OrgProjectsActivityAdapter } from '../components/ChartKit/adapters/OrgProjectsActivityAdapter'
 
 export default function Home() {
   const base = useMemo(() => window.location.origin, [])
@@ -142,34 +150,24 @@ export default function Home() {
         ) : (
           <>
             <section>
-              <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-                {[
-                  { label: 'Total', value: sev.total, cls: 'bg-slate-100' },
-                  { label: 'Critical', value: sev.critical, cls: 'bg-red-600 text-white' },
-                  { label: 'High', value: sev.high, cls: 'bg-red-500 text-white' },
-                  { label: 'Medium', value: sev.medium, cls: 'bg-amber-400 text-black' },
-                  { label: 'Low', value: sev.low, cls: 'bg-yellow-200 text-black' },
-                  { label: 'Info', value: sev.info, cls: 'bg-blue-200 text-black' },
-                ].map((c, i) => (
-                  <div key={i} className={`rounded border border-slate-200 p-3 ${c.cls}`}>
-                    <div className="text-xs uppercase tracking-wide">{c.label}</div>
-                    <div className="text-2xl font-semibold">{Number(c.value || 0).toLocaleString()}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
-                <div className="rounded border bg-white p-3">
-                  <div className="text-xs text-slate-500">Projects</div>
-                  <div className="text-xl font-semibold">{Number(summary?.projects_count || 0).toLocaleString()}</div>
-                </div>
-                <div className="rounded border bg-white p-3">
-                  <div className="text-xs text-slate-500">CodeQL Scanned</div>
-                  <div className="text-xl font-semibold">{Number(summary?.repos_count || 0).toLocaleString()}</div>
-                </div>
-                <div className="rounded border bg-white p-3">
-                  <div className="text-xs text-slate-500">Scans</div>
-                  <div className="text-xl font-semibold">{Number(summary?.scans_count || 0).toLocaleString()}</div>
-                </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <ChartHost
+                  datasetKey="org.severity"
+                  title="Severity Distribution"
+                  description="Organization-wide severity totals"
+                  adapter={OrgSeverityAdapter}
+                  defaultType="donut"
+                  availableTypes={["donut","pie","bar","treemap","sunburst"]}
+                />
+                <ChartHost
+                  datasetKey="org.kpis"
+                  title="KPI Tiles"
+                  description="Projects, repos, scans, and findings"
+                  adapter={OrgKPIsAdapter}
+                  defaultType="kpis"
+                  availableTypes={["kpis","bar","bullet"]}
+                  timeRangeOptions={[]}
+                />
               </div>
             </section>
 
@@ -178,34 +176,13 @@ export default function Home() {
                 <h2 className="font-medium">Top CodeQL Repositories</h2>
                 <a href="/projects" className="text-blue-600 underline text-sm">View Projects</a>
               </div>
-              {(() => {
-                const columns: ColumnDef<any>[] = [
-                  { key: 'repo', header: 'Repository', render: (r) => {
-                    const proj = findProjectByRepoShort(r.repo)
-                    return proj ? (
-                      <a className="text-blue-600 underline" href={`/projects/${proj.uuid}`}>{r.repo}</a>
-                    ) : (
-                      <span>{r.repo}</span>
-                    )
-                  } },
-                  { key: 'critical', header: 'Critical', widthClass: 'w-24' },
-                  { key: 'high', header: 'High', widthClass: 'w-24' },
-                  { key: 'medium', header: 'Medium', widthClass: 'w-24' },
-                  { key: 'low', header: 'Low', widthClass: 'w-24' },
-                  { key: 'info', header: 'Info', widthClass: 'w-24' },
-                  { key: 'total', header: 'Total', widthClass: 'w-28' },
-                ]
-                return (
-                  <DataTable
-                    data={topRepos}
-                    columns={columns}
-                    defaultPageSize={10}
-                    pageSizeOptions={[10,25,50]}
-                    searchPlaceholder="Search repositories…"
-                    filterKeys={['repo']}
-                  />
-                )
-              })()}
+              <ChartHost
+                datasetKey="org.topRepos"
+                title="Top CodeQL Repositories"
+                adapter={TopReposAdapter}
+                defaultType="stackedBar"
+                availableTypes={["stackedBar","treemap","sunburst","donut"]}
+              />
             </section>
 
             <section className="bg-white p-4 rounded border">
@@ -213,39 +190,25 @@ export default function Home() {
                 <h2 className="font-medium">Repository Overview</h2>
                 <a href="/projects" className="text-blue-600 underline text-sm">Manage Projects</a>
               </div>
-              {(() => {
-                const rows = (projects || []).map((p: any) => {
-                  let owner = ''
-                  try { const u = new URL(p.repo_url || ''); const parts = u.pathname.replace(/^\//,'').split('/'); owner = parts[0] || '' } catch {}
-                  return {
-                    uuid: p.uuid,
-                    name: p.name,
-                    owner,
-                    primary_language: p.primary_language || '—',
-                    last_commit_at: p.last_commit_at || null,
-                    contributors_count: p.contributors_count ?? 0,
-                    license: '—',
-                  }
-                })
-                const columns: ColumnDef<any>[] = [
-                  { key: 'name', header: 'Repository', render: (r) => <a className="text-blue-600 underline" href={`/projects/${r.uuid}`}>{r.name}</a> },
-                  { key: 'owner', header: 'Owner' },
-                  { key: 'primary_language', header: 'Primary Language' },
-                  { key: 'last_commit_at', header: 'Last Commit', render: (r) => r.last_commit_at ? new Date(r.last_commit_at).toLocaleString() : '—' },
-                  { key: 'contributors_count', header: 'Contributors' },
-                  { key: 'license', header: 'License' },
-                ]
-                return (
-                  <DataTable
-                    data={rows}
-                    columns={columns}
-                    defaultPageSize={10}
-                    pageSizeOptions={[10,25,50]}
-                    filterKeys={['name','owner','primary_language','license']}
-                    searchPlaceholder="Search repositories…"
-                  />
-                )
-              })()}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ChartHost
+                  datasetKey="org.projects.languages"
+                  title="Primary Language Distribution"
+                  description="Distribution by project primary language"
+                  adapter={OrgProjectsLanguagesAdapter}
+                  defaultType="donut"
+                  availableTypes={["donut","treemap","sunburst"]}
+                  timeRangeOptions={[]}
+                />
+                <ChartHost
+                  datasetKey="org.projects.activity"
+                  title="Activity Recency"
+                  description="Last commit dates across projects"
+                  adapter={OrgProjectsActivityAdapter}
+                  defaultType="line"
+                  availableTypes={["line","bar"]}
+                />
+              </div>
             </section>
 
             <section className="bg-white p-4 rounded border">
@@ -253,36 +216,13 @@ export default function Home() {
                 <h2 className="font-medium">Security Alerts (CodeQL)</h2>
                 <div className="text-xs text-slate-600">Org totals severity distribution</div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <div className="text-xs text-slate-600 mb-1">Severity Distribution</div>
-                  <div className="space-y-1">
-                    {[
-                      ['Critical','bg-red-600 text-white', Number(sev.critical||0)],
-                      ['High','bg-red-500 text-white', Number(sev.high||0)],
-                      ['Medium','bg-amber-400 text-black', Number(sev.medium||0)],
-                      ['Low','bg-yellow-200 text-black', Number(sev.low||0)],
-                      ['Info','bg-blue-200 text-black', Number(sev.info||0)],
-                      ['Unknown','bg-slate-200 text-black', Number(sev.unknown||0)],
-                    ].map(([label, cls, val], idx) => {
-                      const pct = sevTotal > 0 ? Math.max(2, Math.round((val as number) * 100 / sevTotal)) : 0
-                      return (
-                        <div key={idx} className="flex items-center gap-2 text-xs">
-                          <div className="w-20 text-right">{label}</div>
-                          <div className="flex-1 h-4 bg-slate-100 rounded">
-                            <div className={`h-4 rounded ${cls as string}`} style={{ width: `${pct}%` }} title={`${val} (${pct}%)`} />
-                          </div>
-                          <div className="w-16 text-right">{Number(val).toLocaleString()}</div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-slate-600 mb-1">Findings Trend (recent scans)</div>
-                  <TrendSvg data={findingsTrend} stroke="#0ea5e9" />
-                </div>
-              </div>
+              <ChartHost
+                datasetKey="org.scansTrend"
+                title="Findings Trend (recent scans)"
+                adapter={RecentScansTrendAdapter}
+                defaultType="line"
+                availableTypes={["line","bar","bullet","donut"]}
+              />
             </section>
 
             <section className="bg-white p-4 rounded border">
@@ -290,30 +230,21 @@ export default function Home() {
                 <h2 className="font-medium">Contributor & Activity</h2>
                 <div className="text-xs text-slate-600">Last ~500 commits (org-wide)</div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <div className="text-xs text-slate-600 mb-1">Recent Commits Trend</div>
-                  <TrendSvg data={commitsTrend} stroke="#10b981" />
-                </div>
-                <div>
-                  <div className="text-xs text-slate-600 mb-1">Top Contributors</div>
-                  {(() => {
-                    const columns: ColumnDef<any>[] = [
-                      { key: 'login', header: 'Login' },
-                      { key: 'commits', header: 'Commits' },
-                    ]
-                    return (
-                      <DataTable
-                        data={topContributors}
-                        columns={columns}
-                        defaultPageSize={10}
-                        pageSizeOptions={[10,25,50]}
-                        filterKeys={['login']}
-                        searchPlaceholder="Search contributors…"
-                      />
-                    )
-                  })()}
-                </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ChartHost
+                  datasetKey="org.commits.trend"
+                  title="Recent Commits Trend"
+                  adapter={OrgProjectsActivityAdapter}
+                  defaultType="line"
+                  availableTypes={["line","bar"]}
+                />
+                <ChartHost
+                  datasetKey="org.contributors.top"
+                  title="Top Contributors"
+                  adapter={OrgProjectsContributorsAdapter}
+                  defaultType="bar"
+                  availableTypes={["bar","donut"]}
+                />
               </div>
             </section>
 
