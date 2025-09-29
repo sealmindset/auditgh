@@ -76,7 +76,7 @@ main() {
   fi
 
   # Ollama API (reachable from server container)
-  if ${COMPOSE} exec -T server curl -fsS http://ollama:11434/api/version >/dev/null; then
+  if ${COMPOSE} exec -T server node -e 'fetch("http://ollama:11434/api/version").then(r=>{if(r.ok)process.exit(0);process.exit(1)}).catch(()=>process.exit(1))'; then
     info "[ok] ollama: reachable from server (http://ollama:11434)"
   else
     error "[fail] ollama: not reachable from server; ensure ai profile is enabled and model(s) are pulled"

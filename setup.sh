@@ -147,13 +147,9 @@ ensure_env() {
   fi
 }
 wait_for_postgrest() {
-  if ! command -v curl >/dev/null 2>&1; then
-    warn "curl not found; skipping PostgREST readiness check"
-    return 0
-  fi
-  info "Waiting for PostgREST at http://localhost:3001 (60s timeout)"
+  info "Waiting for PostgREST (inside server) at http://postgrest:3000 (60s timeout)"
   for i in {1..60}; do
-    if curl -fsS http://localhost:3001 >/dev/null; then
+    if ${COMPOSE} exec -T server node -e 'fetch("http://postgrest:3000").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'; then
       info "PostgREST is up."
       return 0
     fi
@@ -164,13 +160,9 @@ wait_for_postgrest() {
 
 # Wait for server /health to be ready (best-effort)
 wait_for_server() {
-  if ! command -v curl >/dev/null 2>&1; then
-    warn "curl not found; skipping server readiness check"
-    return 0
-  fi
-  info "Waiting for Server at http://localhost:8080/health (60s timeout)"
+  info "Waiting for Server health (inside server) at http://localhost:8080/health (60s timeout)"
   for i in {1..60}; do
-    if curl -fsS http://localhost:8080/health >/dev/null; then
+    if ${COMPOSE} exec -T server node -e 'fetch("http://localhost:8080/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'; then
       info "Server is up."
       return 0
     fi
