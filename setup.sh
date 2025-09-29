@@ -7,6 +7,10 @@
 set -Eeuo pipefail
 
 PROJECT_NAME=${PROJECT_NAME:-portal}
+# Enable optional AI stack (ollama) by default; set ENABLE_AI=0 to disable
+ENABLE_AI=${ENABLE_AI:-1}
+# Default Ollama model to ensure is available
+AI_MODEL=${AI_MODEL:-qwen2.5:3b}
 
 # Seed engagement snapshot (stars, forks, watchers, open issues) via scan_engagement.py
 seed_engagement() {
@@ -119,17 +123,29 @@ require() {
 
 info()  { echo "[setup] $*"; }
 warn()  { echo "[setup][warn] $*"; }
-error() { echo "[setup][error] $*" >&2; }
 
 confirm_or_exit() {
   if [[ -n "$CONFIRM" ]]; then return 0; fi
   read -r -p "This will DELETE Docker volume '${VOLUME_NAME}' and reinitialize the database. Continue? [y/N] " ans || true
   case "${ans:-}" in
-    y|Y|yes|YES) ;; 
+    y|Y|yes|YES) ;;
     *) info "Aborted."; exit 0;;
   esac
 }
 
+# Ensure .env exists to support docker compose variable interpolation (never overwrite)
+ensure_env() {
+  if [[ ! -f .env ]]; then
+    if [[ -f .env.sample ]]; then
+      info ".env not found; creating from .env.sample"
+      cp .env.sample .env
+    else
+      warn ".env and .env.sample not found; proceeding without env file"
+    fi
+  else
+    info ".env found"
+  fi
+}
 wait_for_postgrest() {
   if ! command -v curl >/dev/null 2>&1; then
     warn "curl not found; skipping PostgREST readiness check"
@@ -144,6 +160,48 @@ wait_for_postgrest() {
     sleep 1
   done
   error "PostgREST did not become ready within 60s. Check logs: ${COMPOSE} logs -f postgrest"
+}
+
+# Wait for server /health to be ready (best-effort)
+wait_for_server() {
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl not found; skipping server readiness check"
+    return 0
+  fi
+  info "Waiting for Server at http://localhost:8080/health (60s timeout)"
+  for i in {1..60}; do
+    if curl -fsS http://localhost:8080/health >/dev/null; then
+      info "Server is up."
+      return 0
+    fi
+    sleep 1
+  done
+  warn "Server did not become ready within 60s. Check logs: ${COMPOSE} logs -f server"
+}
+
+# Ensure the Ollama model exists inside the container (if AI enabled)
+ensure_ollama_model() {
+  if [[ "${ENABLE_AI}" != "1" ]]; then return 0; fi
+  # Verify ollama service is running before attempting pull
+  local cid
+  cid=$(${COMPOSE} --profile ai ps -q ollama 2>/dev/null || true)
+  if [[ -n "${cid}" ]]; then
+    info "Ensuring Ollama model '${AI_MODEL}' is available"
+    # Pull is idempotent; -T avoids TTY issues on CI/Windows shells
+    ${COMPOSE} --profile ai exec -T ollama ollama pull "${AI_MODEL}" || warn "Ollama pull failed; model may already be present or network blocked"
+  else
+    warn "Ollama service not running; skipped model ensure"
+  fi
+}
+
+# Ensure host bind directories exist to avoid Docker creating root-owned dirs
+ensure_host_dirs() {
+  for d in oss_reports terraform_reports binaries_reports runs ollama; do
+    if [[ ! -d "./$d" ]]; then
+      info "Creating host directory: ./$d"
+      mkdir -p "./$d"
+    fi
+  done
 }
 
 seed_projects() {
@@ -246,10 +304,28 @@ main() {
   info "Removing DB volume '${VOLUME_NAME}'"
   docker volume rm "${VOLUME_NAME}" || true
 
+  # Ensure env exists (create from sample if missing; never overwrite existing)
+  ensure_env
+  # Ensure host bind directories exist for mounts in compose
+  ensure_host_dirs
+  # Re-evaluate COMPOSE to include --env-file if .env now exists
+  if [[ -f ./.env ]]; then
+    COMPOSE="docker compose --env-file ./.env -p ${PROJECT_NAME} -f ${COMPOSE_FILE}"
+  else
+    COMPOSE="docker compose -p ${PROJECT_NAME} -f ${COMPOSE_FILE}"
+  fi
+
   info "Bringing up portal stack fresh"
-  ${COMPOSE} up -d --remove-orphans
+  if [[ "${ENABLE_AI}" == "1" ]]; then
+    info "Starting with AI profile (ollama) enabled"
+    ${COMPOSE} --profile ai up -d --remove-orphans db postgrest server web ollama
+  else
+    ${COMPOSE} up -d --remove-orphans db postgrest server web
+  fi
 
   wait_for_postgrest
+  wait_for_server
+  ensure_ollama_model
 
   seed_projects
   # Seed LOC/files first so project_languages gets created; then OSS adds bytes

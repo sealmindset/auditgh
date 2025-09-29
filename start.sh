@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # start.sh - start the full portal stack services
-# Brings up: db, postgrest, server, web, scanner
+# Brings up: db, postgrest, server, web, scanner, ollama
 
 set -Eeuo pipefail
 
@@ -26,9 +26,9 @@ main() {
     exit 1
   fi
 
-  info "Starting services: db postgrest server web scanner"
-  info "Command: ${COMPOSE} up -d --remove-orphans db postgrest server web scanner"
-  ${COMPOSE} up -d --remove-orphans db postgrest server web scanner
+  info "Starting services: db postgrest server web scanner ollama"
+  info "Command: ${COMPOSE} --profile ai up -d --remove-orphans db postgrest server web ollama scanner"
+  ${COMPOSE} --profile ai up -d --remove-orphans db postgrest server web ollama scanner
 
   if command -v curl >/dev/null 2>&1; then
     info "Waiting for Server on http://localhost:8080/health (60s timeout)"
@@ -75,6 +75,14 @@ main() {
     fail=1
   fi
 
+  # Ollama API (reachable from server container)
+  if ${COMPOSE} exec -T server curl -fsS http://ollama:11434/api/version >/dev/null; then
+    info "[ok] ollama: reachable from server (http://ollama:11434)"
+  else
+    error "[fail] ollama: not reachable from server; ensure ai profile is enabled and model(s) are pulled"
+    fail=1
+  fi
+
   # Web (nginx) root
   if curl -fsS http://localhost:5173 >/dev/null; then
     info "[ok] web: http://localhost:5173"
@@ -100,6 +108,7 @@ main() {
   info "Server:        http://localhost:8080"
   info "PostgREST:     http://localhost:3001"
   info "DB:            localhost:5434 (inside container: db:5432)"
+  info "Ollama:        internal at http://ollama:11434 (compose profile: ai)"
   info "Logs:          ${COMPOSE} logs -f"
 }
 

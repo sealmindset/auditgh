@@ -34,8 +34,15 @@ export async function fetchExtract(url: string): Promise<string> {
   }
 }
 
+function clampText(s: string, max: number): string {
+  if (!s) return ''
+  return s.length > max ? `${s.slice(0, max)}…[truncated]` : s
+}
+
 function buildPrompt(input: AnalysisInput, referenceExtracts: string[]): { system: string, user: string } {
-  const ctx = JSON.stringify(input.context, null, 2)
+  const MAX_CTX = Math.max(20000, parseInt(process.env.AI_ASSIST_MAX_CONTEXT || '120000', 10) || 120000)
+  // Use compact JSON to keep payloads small and avoid provider/network failures
+  const ctx = clampText(JSON.stringify(input.context || {}), MAX_CTX)
   const refs = (input.referenceUrls || []).map((u, i) => `Reference ${i+1}: ${u}\nExcerpt: ${(referenceExtracts[i] || '').slice(0, 1000)}`).join('\n\n')
   if ((input.mode || 'citations_only') === 'citations_only') {
     const system = 'You are a security citations assistant. Return only a list of authoritative citations that substantiate exploitability (e.g., PoC or public exploit). If none are credible, state "No credible PoC found". Do NOT provide how-to steps.'
