@@ -196,6 +196,37 @@ ensure_host_dirs() {
   done
 }
 
+# Preflight: ensure db init SQL directory exists and files are world-readable
+preflight_db_init() {
+  local init_dir="./db/portal_init"
+  if [[ ! -d "${init_dir}" ]]; then
+    warn "DB init directory not found at ${init_dir}; fresh DB will be empty unless migrations are applied later"
+    return 0
+  fi
+  # Directory should be traversable
+  chmod 755 "${init_dir}" || true
+  # SQL files should be 0644 so postgres user can read them inside container
+  local any_sql
+  any_sql=$(find "${init_dir}" -maxdepth 1 -type f -name '*.sql' | head -n 1 || true)
+  if [[ -z "${any_sql}" ]]; then
+    warn "No .sql files found in ${init_dir}; DB may initialize without schema"
+  else
+    info "Setting permissions on SQL init files in ${init_dir}"
+    find "${init_dir}" -type f -name '*.sql' -print -exec chmod 644 {} + 2>/dev/null || true
+  fi
+}
+
+# Preflight: warn when required core envs are missing for DB init
+preflight_env_validation() {
+  local missing=()
+  [[ -z "${POSTGRES_USER:-}" ]] && missing+=(POSTGRES_USER)
+  [[ -z "${POSTGRES_PASSWORD:-}" ]] && missing+=(POSTGRES_PASSWORD)
+  [[ -z "${POSTGRES_DB:-}" ]] && missing+=(POSTGRES_DB)
+  if (( ${#missing[@]} > 0 )); then
+    warn "Missing env vars: ${missing[*]}. Using defaults or compose may fail connecting. Check .env."
+  fi
+}
+
 seed_projects() {
   # Uses the 'seeder' service image (auditgh-scanner:latest) to run scan_contributor.py ONCE
   local org token
@@ -300,6 +331,9 @@ main() {
   ensure_env
   # Ensure host bind directories exist for mounts in compose
   ensure_host_dirs
+  # Preflight checks for DB init files and envs
+  preflight_env_validation
+  preflight_db_init
   # Re-evaluate COMPOSE to include --env-file if .env now exists
   if [[ -f ./.env ]]; then
     COMPOSE="docker compose --env-file ./.env -p ${PROJECT_NAME} -f ${COMPOSE_FILE}"
