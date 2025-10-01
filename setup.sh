@@ -7,6 +7,27 @@
 set -Eeuo pipefail
 
 PROJECT_NAME=${PROJECT_NAME:-portal}
+
+# Wait for the DB container to become ready using pg_isready
+wait_for_db() {
+  info "Waiting for DB readiness via pg_isready (60s timeout)"
+  for i in {1..60}; do
+    if ${COMPOSE} exec -T db pg_isready -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-security_portal}" >/dev/null 2>&1; then
+      info "DB is ready."
+      return 0
+    fi
+    sleep 1
+  done
+  error "DB did not become ready within 60s. Check logs: ${COMPOSE} logs -f db"
+  return 1
+}
+
+# Ensure core roles exist even when reusing an existing volume (init scripts run only on first boot)
+ensure_core_roles() {
+  info "Ensuring core roles (app, postgrest_anon, postgrest_service, postgrest_admin) exist"
+  ${COMPOSE} exec -T db psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-security_portal}" -v ON_ERROR_STOP=1 \
+    -f /docker-entrypoint-initdb.d/000_roles.sql >/dev/null 2>&1 || true
+}
 # Enable optional AI stack (ollama) by default; set ENABLE_AI=0 to disable
 ENABLE_AI=${ENABLE_AI:-1}
 # Default Ollama model to ensure is available
@@ -123,6 +144,7 @@ require() {
 
 info()  { echo "[setup] $*"; }
 warn()  { echo "[setup][warn] $*"; }
+error() { echo "[setup][error] $*" >&2; }
 
 confirm_or_exit() {
   if [[ -n "$CONFIRM" ]]; then return 0; fi
@@ -156,6 +178,7 @@ wait_for_postgrest() {
     sleep 1
   done
   error "PostgREST did not become ready within 60s. Check logs: ${COMPOSE} logs -f postgrest"
+  return 1
 }
 
 # Wait for server /health to be ready (best-effort)
@@ -341,15 +364,20 @@ main() {
     COMPOSE="docker compose -p ${PROJECT_NAME} -f ${COMPOSE_FILE}"
   fi
 
-  info "Bringing up portal stack fresh"
+  info "Bringing up DB first"
+  ${COMPOSE} up -d --remove-orphans db
+  wait_for_db || exit 1
+  ensure_core_roles
+
+  info "Starting remaining services"
   if [[ "${ENABLE_AI}" == "1" ]]; then
     info "Starting with AI profile (ollama) enabled"
-    ${COMPOSE} --profile ai up -d --remove-orphans db postgrest server web ollama
+    ${COMPOSE} --profile ai up -d --remove-orphans postgrest server web ollama
   else
-    ${COMPOSE} up -d --remove-orphans db postgrest server web
+    ${COMPOSE} up -d --remove-orphans postgrest server web
   fi
 
-  wait_for_postgrest
+  wait_for_postgrest || exit 1
   wait_for_server
   ensure_ollama_model
 
